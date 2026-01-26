@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MapMLify - WMS to MapML Converter</title>
+  <link rel="stylesheet" href="style/main.css" />
+  <script type="module" src="../node_modules/@maps4html/mapml/dist/mapml.js"></script>
+</head>
+
+<body>
+  <header>
+    <h1>MapMLify</h1>
+    <p>Convert Web Map Service (WMS) layers to functional MapML</p>
+  </header>
+
+  <main>
+    <section class="input-section">
+      <label for="wms-url">WMS Capabilities URL:</label>
+      <div class="input-group">
+        <input type="text" id="wms-url" list="wms-presets" 
+          placeholder="Type, paste, or select from list..."
+          autocomplete="off" />
+        <datalist id="wms-presets">
+          <option value="">Loading...</option>
+        </datalist>
+        <button id="load-btn">Load Service</button>
+      </div>
+    </section>
+
+    <section id="service-info" class="service-info hidden">
+      <h2>Service Information</h2>
+      <div id="service-details"></div>
+    </section>
+  </main>
+
+  <script type="module" src="script/main.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,810 @@
+// Main application logic
+
+const CORS_PROXY = 'https://corsproxy.io/?';
+
+// Transform WGS84 coordinates to Web Mercator (EPSG:3857)
+function wgs84ToWebMercator(lon, lat) {
+  const x = (lon * 20037508.34) / 180;
+  let y = Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) / (Math.PI / 180);
+  y = (y * 20037508.34) / 180;
+  return { x, y };
+}
+
+const wmsUrlInput = document.getElementById('wms-url');
+const loadBtn = document.getElementById('load-btn');
+const serviceInfo = document.getElementById('service-info');
+const serviceDetails = document.getElementById('service-details');
+
+let currentWmsBaseUrl = '';
+let currentUsedProxy = false;
+
+// Load capabilities URLs from file on page load
+async function loadCapabilitiesPresets() {
+  try {
+    const response = await fetch('capabilities.txt');
+    const text = await response.text();
+    const urls = text.split('\n').filter(line => line.trim());
+    
+    const datalist = document.getElementById('wms-presets');
+    if (!datalist) return;
+    
+    // Clear existing options and populate with URLs from file
+    datalist.innerHTML = '';
+    urls.forEach((url) => {
+      const option = document.createElement('option');
+      option.value = url;
+      datalist.appendChild(option);
+    });
+    
+    // Leave input blank by default
+    wmsUrlInput.value = '';
+  } catch (error) {
+    console.error('Error loading capabilities presets:', error);
+  }
+}
+
+// Load presets when page loads
+loadCapabilitiesPresets();
+
+loadBtn.addEventListener('click', async () => {
+  const url = wmsUrlInput.value.trim();
+
+  if (!url) {
+    alert('Please enter a WMS capabilities URL');
+    return;
+  }
+
+  try {
+    loadBtn.disabled = true;
+    loadBtn.textContent = 'Loading...';
+
+    await loadWMSCapabilities(url);
+  } catch (error) {
+    console.error('Error loading WMS capabilities:', error);
+    alert('Failed to load WMS capabilities. Check console for details.');
+  } finally {
+    loadBtn.disabled = false;
+    loadBtn.textContent = 'Load Service';
+  }
+});
+
+async function loadWMSCapabilities(url) {
+  let response;
+  let usedProxy = false;
+
+  try {
+    // Try direct fetch first
+    response = await fetch(url);
+  } catch (error) {
+    // If direct fetch fails (likely CORS), try with proxy
+    const proxyUrl = CORS_PROXY + encodeURIComponent(url);
+    console.log('Direct fetch failed, trying CORS proxy...');
+    console.log('Proxy URL:', proxyUrl);
+    usedProxy = true;
+    response = await fetch(proxyUrl);
+  }
+
+  const text = await response.text();
+
+  // Parse XML
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(text, 'text/xml');
+
+  // Store base URL and proxy flag
+  currentWmsBaseUrl = url.split('?')[0];
+  currentUsedProxy = usedProxy;
+
+  // Extract basic service information
+  const serviceInfo = extractServiceInfo(xmlDoc, currentWmsBaseUrl);
+
+  // Display service information
+  displayServiceInfo(serviceInfo, usedProxy);
+}
+
+function extractServiceInfo(xmlDoc, baseUrl) {
+  const service = xmlDoc.querySelector('Service');
+  const version = xmlDoc.documentElement.getAttribute('version') || '1.3.0';
+
+  // Extract service-level Attribution OnlineResource as fallback
+  let serviceLicenseUrl = '';
+  let serviceLicenseTitle = '';
+  // Look for Attribution in the root Layer (Capability > Layer)
+  const rootLayer = xmlDoc.querySelector('Capability > Layer');
+  if (rootLayer) {
+    const rootAttribution = rootLayer.querySelector(':scope > Attribution');
+    if (rootAttribution) {
+      serviceLicenseTitle = rootAttribution.querySelector('Title')?.textContent || '';
+      const onlineResource = rootAttribution.querySelector('OnlineResource');
+      if (onlineResource) {
+        serviceLicenseUrl = onlineResource.getAttribute('xlink:href') || onlineResource.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+      }
+    }
+  }
+  console.log('Service-level license URL:', serviceLicenseUrl || 'none', 'Title:', serviceLicenseTitle || 'none');
+
+  // Extract GetMap image formats
+  const getMapFormats = [];
+  const mapFormatElements = xmlDoc.querySelectorAll('GetMap > Format');
+  mapFormatElements.forEach(formatEl => {
+    getMapFormats.push(formatEl.textContent);
+  });
+
+  // Extract GetFeatureInfo formats
+  const getFeatureInfoFormats = [];
+  const formatElements = xmlDoc.querySelectorAll('GetFeatureInfo > Format');
+  formatElements.forEach(formatEl => {
+    getFeatureInfoFormats.push(formatEl.textContent);
+  });
+
+  // Extract layers
+  const layers = [];
+  const layerElements = xmlDoc.querySelectorAll('Layer > Name');
+  const seenNames = new Set();
+
+  layerElements.forEach((nameEl) => {
+    const parentLayer = nameEl.closest('Layer');
+    const name = nameEl.textContent;
+    const title = parentLayer.querySelector(':scope > Title')?.textContent;
+    const abstract = parentLayer.querySelector(':scope > Abstract')?.textContent;
+    const queryable = parentLayer.getAttribute('queryable') === '1';
+
+    // Skip if we've already processed this layer name
+    if (!name || seenNames.has(name)) return;
+    seenNames.add(name);
+
+    // Extract styles
+    const styles = [];
+    const styleElements = parentLayer.querySelectorAll(':scope > Style');
+    styleElements.forEach(styleEl => {
+      const styleName = styleEl.querySelector('Name')?.textContent;
+      const styleTitle = styleEl.querySelector('Title')?.textContent;
+      
+      // Extract LegendURL information
+      const legendURLs = [];
+      const legendElements = styleEl.querySelectorAll('LegendURL');
+      legendElements.forEach(legendEl => {
+        const width = legendEl.getAttribute('width');
+        const height = legendEl.getAttribute('height');
+        const format = legendEl.querySelector('Format')?.textContent;
+        const onlineResource = legendEl.querySelector('OnlineResource');
+        const href = onlineResource?.getAttribute('xlink:href') || onlineResource?.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+        
+        if (href) {
+          legendURLs.push({ width, height, format, href });
+        }
+      });
+      
+      if (styleName) {
+        styles.push({
+          name: styleName,
+          title: styleTitle || styleName,
+          legendURLs
+        });
+      }
+    });
+
+    // Extract Attribution OnlineResource for license link
+    let licenseUrl = '';
+    let licenseTitle = '';
+    const attribution = parentLayer.querySelector(':scope > Attribution');
+    if (attribution) {
+      licenseTitle = attribution.querySelector('Title')?.textContent || '';
+      const onlineResource = attribution.querySelector('OnlineResource');
+      if (onlineResource) {
+        licenseUrl = onlineResource.getAttribute('xlink:href') || onlineResource.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+      }
+    }
+    // Use service-level license URL and title as fallback
+    if (!licenseUrl && serviceLicenseUrl) {
+      licenseUrl = serviceLicenseUrl;
+      licenseTitle = serviceLicenseTitle;
+    }
+
+    // Get bounding box (try EX_GeographicBoundingBox for 1.3.0, LatLonBoundingBox for 1.1.1)
+    let bbox = parentLayer.querySelector(':scope > EX_GeographicBoundingBox');
+    let minx, miny, maxx, maxy;
+
+    if (bbox) {
+      minx = bbox.querySelector('westBoundLongitude')?.textContent;
+      miny = bbox.querySelector('southBoundLatitude')?.textContent;
+      maxx = bbox.querySelector('eastBoundLongitude')?.textContent;
+      maxy = bbox.querySelector('northBoundLatitude')?.textContent;
+    } else {
+      bbox = parentLayer.querySelector(':scope > LatLonBoundingBox');
+      if (bbox) {
+        minx = bbox.getAttribute('minx');
+        miny = bbox.getAttribute('miny');
+        maxx = bbox.getAttribute('maxx');
+        maxy = bbox.getAttribute('maxy');
+      }
+    }
+
+    if (minx && miny && maxx && maxy) {
+      layers.push({
+        name,
+        title: title || name,
+        abstract: abstract || '',
+        bbox: { minx, miny, maxx, maxy },
+        queryable,
+        styles,
+        licenseUrl,
+        licenseTitle,
+      });
+      console.log('Layer:', name, 'License URL:', licenseUrl || 'none');
+    }
+  });
+
+  return {
+    title: service?.querySelector('Title')?.textContent || 'N/A',
+    abstract: service?.querySelector('Abstract')?.textContent || 'N/A',
+    version,
+    layers,
+    baseUrl,
+    getFeatureInfoFormats,
+    getMapFormats,
+    serviceLicenseUrl,
+  };
+}
+
+function displayServiceInfo(info, usedProxy) {
+  const proxyNote = usedProxy
+    ? '<p><em>(Loaded via CORS proxy)</em></p>'
+    : '';
+
+  const formatOptions = info.getFeatureInfoFormats.map(fmt => 
+    `<option value="${fmt}">${fmt}</option>`
+  ).join('');
+
+  const layersList = info.layers
+    .map(
+      (layer, index) => `
+    <div class="layer-item" data-layer-index="${index}">
+      <div class="layer-controls">
+        <div class="layer-header">
+          <input type="checkbox" id="layer-${index}" class="layer-checkbox" />
+          <label for="layer-${index}"><strong>${layer.title}</strong></label>
+        </div>
+        <p class="layer-name">Name: ${layer.name}</p>
+        ${layer.abstract ? `
+        <details class="layer-abstract">
+          <summary>Abstract</summary>
+          <p>${layer.abstract}</p>
+        </details>
+        ` : ''}
+        ${layer.queryable ? `
+        <div class="query-format-selector">
+          <input type="checkbox" id="query-${index}" class="query-checkbox" title="Enable GetFeatureInfo queries" />
+          <label for="query-${index}" class="query-label">Query</label>
+          <label for="format-${index}">Info Format:</label>
+          <select id="format-${index}" class="format-select">
+            ${formatOptions}
+          </select>
+        </div>
+        ` : ''}
+        ${layer.styles && layer.styles.length > 0 ? `
+        <div class="style-selector">
+          <label for="style-${index}">Style:</label>
+          <select id="style-${index}" class="style-select">
+            ${layer.styles.map(style => `<option value="${style.name}">${style.title}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
+        ${info.getMapFormats && info.getMapFormats.length > 0 ? `
+        <div class="format-selector">
+          <label for="img-format-${index}">Image Format:</label>
+          <select id="img-format-${index}" class="format-select">
+            ${info.getMapFormats.map(fmt => `<option value="${fmt}"${fmt.includes('png') ? ' selected' : ''}>${fmt}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
+        <img 
+          src="${buildGetMapUrl(info.baseUrl, layer, info.version, usedProxy, layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '')}" 
+          alt="Preview of ${layer.title}"
+          class="layer-preview"
+          id="preview-${index}"
+        />
+      </div>
+      <div class="layer-viewer-container" id="viewer-container-${index}"></div>
+    </div>
+  `
+    )
+    .join('');
+
+  serviceDetails.innerHTML = `
+    <p><strong>Title:</strong> ${info.title}</p>
+    <p><strong>Version:</strong> ${info.version}</p>
+    <details class="service-abstract">
+      <summary><strong>Abstract</strong></summary>
+      <p>${info.abstract}</p>
+    </details>
+    ${proxyNote}
+    <h3>Available Layers</h3>
+    <div class="layers-list">
+      ${layersList}
+    </div>
+  `;
+
+  serviceInfo.classList.remove('hidden');
+
+  // Add event listeners to layer checkboxes
+  info.layers.forEach((layer, index) => {
+    const checkbox = document.getElementById(`layer-${index}`);
+    checkbox.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        const queryCheckbox = document.getElementById(`query-${index}`);
+        const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+        const formatSelect = document.getElementById(`format-${index}`);
+        const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+        const styleSelect = document.getElementById(`style-${index}`);
+        const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+        const imgFormatSelect = document.getElementById(`img-format-${index}`);
+        const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+        createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat);
+      } else {
+        removeViewerForLayer(index);
+      }
+    });
+
+    // Add event listener to query checkbox if layer is queryable
+    if (layer.queryable) {
+      const queryCheckbox = document.getElementById(`query-${index}`);
+      queryCheckbox.addEventListener('change', (e) => {
+        const layerCheckbox = document.getElementById(`layer-${index}`);
+        if (layerCheckbox.checked) {
+          const formatSelect = document.getElementById(`format-${index}`);
+          const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+          // Update the layer with or without query support
+          updateLayerQueryInViewer(index, layer.name, e.target.checked, layer, info.version, selectedFormat);
+        }
+      });
+
+      // Add event listener to format dropdown
+      const formatSelect = document.getElementById(`format-${index}`);
+      if (formatSelect) {
+        formatSelect.addEventListener('change', (e) => {
+          const layerCheckbox = document.getElementById(`layer-${index}`);
+          const queryCheckbox = document.getElementById(`query-${index}`);
+          if (layerCheckbox.checked && queryCheckbox.checked) {
+            const styleSelect = document.getElementById(`style-${index}`);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+            // Update query link with new format
+            updateLayerQueryInViewer(index, layer.name, true, layer, info.version, e.target.value);
+          }
+        });
+      }
+    }
+
+    // Add event listener to style selector if available
+    if (layer.styles && layer.styles.length > 0) {
+      const styleSelect = document.getElementById(`style-${index}`);
+      if (styleSelect) {
+        styleSelect.addEventListener('change', (e) => {
+          // Update thumbnail
+          const preview = document.getElementById(`preview-${index}`);
+          if (preview) {
+            preview.src = buildGetMapUrl(info.baseUrl, layer, info.version, usedProxy, e.target.value);
+          }
+          
+          // Update viewer if it's checked
+          const layerCheckbox = document.getElementById(`layer-${index}`);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById(`query-${index}`);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById(`format-${index}`);
+            const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+            const imgFormatSelect = document.getElementById(`img-format-${index}`);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+            // Recreate viewer with new style
+            removeViewerForLayer(index);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, e.target.value, selectedImgFormat);
+          }
+        });
+      }
+    }
+
+    // Add event listener to image format selector if available
+    if (info.getMapFormats && info.getMapFormats.length > 0) {
+      const imgFormatSelect = document.getElementById(`img-format-${index}`);
+      if (imgFormatSelect) {
+        imgFormatSelect.addEventListener('change', (e) => {
+          const layerCheckbox = document.getElementById(`layer-${index}`);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById(`query-${index}`);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById(`format-${index}`);
+            const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+            const styleSelect = document.getElementById(`style-${index}`);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+            // Recreate viewer with new image format
+            removeViewerForLayer(index);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, e.target.value);
+          }
+        });
+      }
+    }
+  });
+}
+
+function buildGetMapUrl(baseUrl, layer, version, usedProxy, styleName) {
+  const { bbox } = layer;
+  const params = new URLSearchParams({
+    SERVICE: 'WMS',
+    VERSION: version,
+    REQUEST: 'GetMap',
+    LAYERS: layer.name,
+    WIDTH: '100',
+    HEIGHT: '100',
+    FORMAT: 'image/png',
+  });
+
+  // Add STYLES parameter if provided
+  if (styleName) {
+    params.set('STYLES', styleName);
+  }
+
+  // Use correct parameter names based on version
+  if (version.startsWith('1.3')) {
+    params.set('CRS', 'EPSG:4326');
+    params.set('BBOX', `${bbox.miny},${bbox.minx},${bbox.maxy},${bbox.maxx}`);
+  } else {
+    params.set('SRS', 'EPSG:4326');
+    params.set('BBOX', `${bbox.minx},${bbox.miny},${bbox.maxx},${bbox.maxy}`);
+  }
+
+  const url = `${baseUrl}?${params.toString()}`;
+  // Don't use CORS proxy for GetMap - often works without CORS
+  return url;
+}
+
+function createQueryLink(layer, version, projectionCode, useWebMercator, infoFormat) {
+  const queryLink = document.createElement('map-link');
+  queryLink.setAttribute('rel', 'query');
+  queryLink.setAttribute('data-query-link', 'true'); // Mark for easy identification
+
+  // Build GetFeatureInfo URL template - same as GetMap but with different REQUEST and additional params
+  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
+
+  if (version.startsWith('1.3')) {
+    tref += `&CRS=${projectionCode}`;
+    // EPSG:3857 uses x,y order; EPSG:4326 in WMS 1.3.0 uses y,x order
+    if (useWebMercator) {
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    } else {
+      tref += '&BBOX={ymin},{xmin},{ymax},{xmax}';
+    }
+  } else {
+    tref += `&SRS=${projectionCode}`;
+    tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+  }
+
+  // Add coordinate parameters for click position
+  // WMS 1.3.0 uses I,J; earlier versions use X,Y
+  if (version.startsWith('1.3')) {
+    tref += '&I={i}&J={j}';
+  } else {
+    tref += '&X={i}&Y={j}';
+  }
+
+  queryLink.setAttribute('tref', tref);
+  return queryLink;
+}
+
+function updateLayerQuery(layerName, queryEnabled, layer, version, selectedFormat) {
+  const viewer = document.querySelector('mapml-viewer');
+  const mapLayer = viewer.querySelector(`map-layer[data-wms-layer="${layerName}"]`);
+  
+  if (!mapLayer) return;
+
+  const mapExtent = mapLayer.querySelector('map-extent');
+  const existingQueryLink = mapExtent.querySelector('map-link[data-query-link="true"]');
+
+  if (queryEnabled) {
+    // Remove existing query link if present
+    if (existingQueryLink) {
+      existingQueryLink.remove();
+    }
+    // Add query link with selected format
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const useWebMercator = viewerProjection === 'OSMTILE';
+    const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
+    
+    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    mapExtent.appendChild(queryLink);
+    console.log('Added/updated query support to layer:', layerName, 'with format:', selectedFormat);
+  } else if (!queryEnabled && existingQueryLink) {
+    // Remove query link
+    existingQueryLink.remove();
+    console.log('Removed query support from layer:', layerName);
+  }
+}
+
+function createViewerForLayer(index, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat) {
+  const container = document.getElementById(`viewer-container-${index}`);
+  if (!container) return;
+
+  // Default to image/png if not specified
+  const imgFormat = imageFormat || 'image/png';
+
+  // Create mapml-viewer element
+  const viewer = document.createElement('mapml-viewer');
+  viewer.setAttribute('projection', 'OSMTILE');
+  viewer.setAttribute('controls', '');
+  viewer.setAttribute('zoom', '0');
+  
+  // Center on layer bbox
+  const { bbox } = layer;
+  const centerLat = (parseFloat(bbox.miny) + parseFloat(bbox.maxy)) / 2;
+  const centerLon = (parseFloat(bbox.minx) + parseFloat(bbox.maxx)) / 2;
+  viewer.setAttribute('lat', centerLat.toString());
+  viewer.setAttribute('lon', centerLon.toString());
+
+  // Add Canada Base Map layer
+  const osmLayer = document.createElement('map-layer');
+  osmLayer.setAttribute('label', 'Canada Base Map');
+  osmLayer.setAttribute('checked', '');
+  
+  const osmExtent = document.createElement('map-extent');
+  osmExtent.setAttribute('units', 'OSMTILE');
+  osmExtent.setAttribute('checked', '');
+  
+  // Add zoom input
+  const zoomInput = document.createElement('map-input');
+  zoomInput.setAttribute('name', 'z');
+  zoomInput.setAttribute('type', 'zoom');
+  zoomInput.setAttribute('min', '0');
+  zoomInput.setAttribute('max', '15');
+  zoomInput.setAttribute('value', '15');
+  osmExtent.appendChild(zoomInput);
+  
+  // Add row input
+  const yInput = document.createElement('map-input');
+  yInput.setAttribute('name', 'y');
+  yInput.setAttribute('type', 'location');
+  yInput.setAttribute('units', 'tilematrix');
+  yInput.setAttribute('axis', 'row');
+  yInput.setAttribute('min', '0');
+  yInput.setAttribute('max', '32768');
+  osmExtent.appendChild(yInput);
+  
+  // Add column input
+  const xInput = document.createElement('map-input');
+  xInput.setAttribute('name', 'x');
+  xInput.setAttribute('type', 'location');
+  xInput.setAttribute('units', 'tilematrix');
+  xInput.setAttribute('axis', 'column');
+  xInput.setAttribute('min', '0');
+  xInput.setAttribute('max', '32768');
+  osmExtent.appendChild(xInput);
+  
+  // Add base map tile link
+  const tileLink1 = document.createElement('map-link');
+  tileLink1.setAttribute('rel', 'tile');
+  tileLink1.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_CBCT_GEOM_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+  osmExtent.appendChild(tileLink1);
+  
+  // Add labels tile link
+  const tileLink2 = document.createElement('map-link');
+  tileLink2.setAttribute('rel', 'tile');
+  tileLink2.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_TXT_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+  osmExtent.appendChild(tileLink2);
+  
+  osmLayer.appendChild(osmExtent);
+  viewer.appendChild(osmLayer);
+
+  // Add the layer to this viewer
+  addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat);
+
+  // Add to container
+  container.appendChild(viewer);
+  
+  console.log('Created viewer for layer:', layer.name);
+}
+
+function removeViewerForLayer(index) {
+  const container = document.getElementById(`viewer-container-${index}`);
+  if (!container) return;
+
+  // Remove the viewer
+  container.innerHTML = '';
+  console.log('Removed viewer for layer index:', index);
+}
+
+function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat) {
+  const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+  const { bbox } = layer;
+
+  // Determine if we should use EPSG:3857 (Web Mercator) or EPSG:4326 (WGS84)
+  const useWebMercator = viewerProjection === 'OSMTILE';
+  const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
+  const units = useWebMercator ? 'OSMTILE' : 'WGS84';
+  
+  // Use first style if none selected and styles exist
+  const styleName = selectedStyle || (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+  
+  // Default to image/png if not specified
+  const imgFormat = imageFormat || 'image/png';
+
+  // Transform bbox if using Web Mercator
+  let transformedBbox;
+  if (useWebMercator) {
+    const minCoords = wgs84ToWebMercator(parseFloat(bbox.minx), parseFloat(bbox.miny));
+    const maxCoords = wgs84ToWebMercator(parseFloat(bbox.maxx), parseFloat(bbox.maxy));
+    transformedBbox = {
+      minx: minCoords.x.toString(),
+      miny: minCoords.y.toString(),
+      maxx: maxCoords.x.toString(),
+      maxy: maxCoords.y.toString(),
+    };
+  } else {
+    transformedBbox = bbox;
+  }
+
+  // Create map-layer element
+  const mapLayer = document.createElement('map-layer');
+  mapLayer.setAttribute('label', layer.title);
+  mapLayer.setAttribute('checked', '');
+  mapLayer.setAttribute('data-wms-layer', layer.name);
+
+  // Create map-extent
+  const mapExtent = document.createElement('map-extent');
+  mapExtent.setAttribute('units', units);
+  mapExtent.setAttribute('checked', '');
+
+  // Create inputs for bbox
+  const inputs = [
+    { name: 'xmin', type: 'location', units: 'pcrs', axis: 'easting', position: 'top-left', min: transformedBbox.minx, max: transformedBbox.maxx },
+    { name: 'ymin', type: 'location', units: 'pcrs', axis: 'northing', position: 'bottom-left', min: transformedBbox.miny, max: transformedBbox.maxy },
+    { name: 'xmax', type: 'location', units: 'pcrs', axis: 'easting', position: 'bottom-right', min: transformedBbox.minx, max: transformedBbox.maxx },
+    { name: 'ymax', type: 'location', units: 'pcrs', axis: 'northing', position: 'top-right', min: transformedBbox.miny, max: transformedBbox.maxy },
+    { name: 'w', type: 'width', min: '1', max: '10000' },
+    { name: 'h', type: 'height', min: '1', max: '10000' },
+    { name: 'i', type: 'location', units: 'map', axis: 'i' },
+    { name: 'j', type: 'location', units: 'map', axis: 'j' },
+  ];
+
+  inputs.forEach((inp) => {
+    const input = document.createElement('map-input');
+    input.setAttribute('name', inp.name);
+    input.setAttribute('type', inp.type);
+    if (inp.position) input.setAttribute('position', inp.position);
+    if (inp.axis) input.setAttribute('axis', inp.axis);
+    if (inp.min) input.setAttribute('min', inp.min);
+    if (inp.max) input.setAttribute('max', inp.max);
+    if (inp.units) input.setAttribute('units', inp.units);
+    mapExtent.appendChild(input);
+  });
+
+  // Add style selector if styles are available
+  if (layer.styles && layer.styles.length > 0) {
+    const mapSelect = document.createElement('map-select');
+    mapSelect.setAttribute('id', 'style-selector');
+    mapSelect.setAttribute('name', 'style');
+    
+    layer.styles.forEach((style) => {
+      const mapOption = document.createElement('map-option');
+      mapOption.setAttribute('value', style.name);
+      mapOption.textContent = style.title;
+      
+      // Mark the selected style
+      if (style.name === styleName) {
+        mapOption.setAttribute('selected', '');
+      }
+      
+      mapSelect.appendChild(mapOption);
+    });
+    
+    mapExtent.appendChild(mapSelect);
+  }
+
+  // Create map-link for image
+  const mapLink = document.createElement('map-link');
+  mapLink.setAttribute('rel', 'image');
+
+  // Build URL manually to preserve template variables
+  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetMap&LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imgFormat)}&TRANSPARENT=TRUE`;
+  
+  // Add STYLES parameter if a style is selected
+  if (styleName) {
+    tref += '&STYLES={style}';
+  }
+
+  if (version.startsWith('1.3')) {
+    tref += `&CRS=${projectionCode}`;
+    // EPSG:3857 uses x,y order; EPSG:4326 in WMS 1.3.0 uses y,x order
+    if (useWebMercator) {
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    } else {
+      tref += '&BBOX={ymin},{xmin},{ymax},{xmax}';
+    }
+  } else {
+    tref += `&SRS=${projectionCode}`;
+    tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+  }
+
+  mapLink.setAttribute('tref', tref);
+  mapExtent.appendChild(mapLink);
+
+  // Add query link if query is enabled
+  if (queryEnabled && layer.queryable) {
+    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    mapExtent.appendChild(queryLink);
+  }
+
+  // Add license link if available (before map-extent)
+  if (layer.licenseUrl) {
+    const licenseLink = document.createElement('map-link');
+    licenseLink.setAttribute('rel', 'license');
+    licenseLink.setAttribute('href', layer.licenseUrl);
+    if (layer.licenseTitle) {
+      licenseLink.setAttribute('title', layer.licenseTitle);
+    }
+    mapLayer.appendChild(licenseLink);
+    console.log('Added license link to layer:', layer.name, 'URL:', layer.licenseUrl, 'Title:', layer.licenseTitle || 'none');
+  } else {
+    console.log('No license URL for layer:', layer.name);
+  }
+  
+  // Add legend links for each style (before map-extent)
+  if (layer.styles && layer.styles.length > 0) {
+    layer.styles.forEach(style => {
+      if (style.legendURLs && style.legendURLs.length > 0) {
+        style.legendURLs.forEach(legend => {
+          const legendLink = document.createElement('map-link');
+          legendLink.setAttribute('rel', 'legend');
+          legendLink.setAttribute('href', legend.href);
+          if (style.title) {
+            legendLink.setAttribute('title', style.title);
+          }
+          if (legend.width) {
+            legendLink.setAttribute('width', legend.width);
+          }
+          if (legend.height) {
+            legendLink.setAttribute('height', legend.height);
+          }
+          mapLayer.appendChild(legendLink);
+        });
+        console.log('Added', style.legendURLs.length, 'legend link(s) for style:', style.title);
+      }
+    });
+  }
+
+  // Add map-extent after license and legend links
+  mapLayer.appendChild(mapExtent);
+  
+  viewer.appendChild(mapLayer);
+
+  console.log('Added layer to viewer:', layer.name);
+}
+
+function updateLayerQueryInViewer(index, layerName, queryEnabled, layer, version, selectedFormat) {
+  const container = document.getElementById(`viewer-container-${index}`);
+  if (!container) return;
+
+  const viewer = container.querySelector('mapml-viewer');
+  if (!viewer) return;
+
+  const mapLayer = viewer.querySelector(`map-layer[data-wms-layer="${layerName}"]`);
+  if (!mapLayer) return;
+
+  const mapExtent = mapLayer.querySelector('map-extent');
+  const existingQueryLink = mapExtent.querySelector('map-link[data-query-link="true"]');
+
+  if (queryEnabled) {
+    // Remove existing query link if present
+    if (existingQueryLink) {
+      existingQueryLink.remove();
+    }
+    // Add query link with selected format
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const useWebMercator = viewerProjection === 'OSMTILE';
+    const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
+    
+    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    mapExtent.appendChild(queryLink);
+    console.log('Added/updated query support to layer:', layerName, 'with format:', selectedFormat);
+  } else if (!queryEnabled && existingQueryLink) {
+    // Remove query link
+    existingQueryLink.remove();
+    console.log('Removed query support from layer:', layerName);
+  }
+}

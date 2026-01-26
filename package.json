@@ -1,0 +1,26 @@
+{
+  "name": "mapmlify",
+  "version": "0.1.0",
+  "description": "A client-side web application to generate functional MapML from Web Map Service capabilities documents",
+  "type": "module",
+  "scripts": {
+    "format": "prettier --write \"**/*.js\"",
+    "format:check": "prettier --check \"**/*.js\"",
+    "serve": "npx http-server . -p 8000 -c-1"
+  },
+  "keywords": [
+    "mapml",
+    "wms",
+    "web-maps",
+    "ogc"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@maps4html/mapml": "^0.16.0"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1",
+    "prettier": "^3.2.5"
+  }
+}
