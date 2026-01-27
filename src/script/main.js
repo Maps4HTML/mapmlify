@@ -45,30 +45,68 @@ function parseISO8601Interval(intervalString) {
   const [startStr, endStr, periodStr] = parts;
   const startTime = new Date(startStr).getTime();
   const endTime = new Date(endStr).getTime();
-  const periodMs = parseISO8601Duration(periodStr);
   
-  if (isNaN(startTime) || isNaN(endTime) || periodMs === 0) {
+  if (isNaN(startTime) || isNaN(endTime)) {
     console.warn('Invalid ISO8601 interval:', intervalString);
     return [];
   }
   
-  const values = [];
-  let currentTime = startTime;
+  // Parse the period to determine if it contains year/month components
+  const periodMatch = periodStr.match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?/);
+  if (!periodMatch) {
+    console.warn('Invalid ISO8601 period:', periodStr);
+    return [];
+  }
+  
+  const years = parseInt(periodMatch[1] || 0);
+  const months = parseInt(periodMatch[2] || 0);
+  const days = parseInt(periodMatch[3] || 0);
+  const hours = parseInt(periodMatch[4] || 0);
+  const minutes = parseInt(periodMatch[5] || 0);
+  const seconds = parseFloat(periodMatch[6] || 0);
   
   // Detect if original format includes milliseconds
   const hasMilliseconds = startStr.includes('.');
   
-  // Generate values from start to end with period increments
-  while (currentTime <= endTime) {
-    let isoString = new Date(currentTime).toISOString();
-    
-    // Remove milliseconds if original format didn't have them
-    if (!hasMilliseconds) {
-      isoString = isoString.replace(/\.\d{3}Z$/, 'Z');
+  const values = [];
+  let currentDate = new Date(startStr);
+  const endDate = new Date(endStr);
+  
+  // If period includes years or months, use date arithmetic (not milliseconds)
+  if (years > 0 || months > 0) {
+    while (currentDate <= endDate) {
+      let isoString = currentDate.toISOString();
+      if (!hasMilliseconds) {
+        isoString = isoString.replace(/\.\d{3}Z$/, 'Z');
+      }
+      values.push(isoString);
+      
+      // Add period using date methods to handle month/year boundaries correctly
+      currentDate = new Date(currentDate);
+      currentDate.setUTCFullYear(currentDate.getUTCFullYear() + years);
+      currentDate.setUTCMonth(currentDate.getUTCMonth() + months);
+      currentDate.setUTCDate(currentDate.getUTCDate() + days);
+      currentDate.setUTCHours(currentDate.getUTCHours() + hours);
+      currentDate.setUTCMinutes(currentDate.getUTCMinutes() + minutes);
+      currentDate.setUTCSeconds(currentDate.getUTCSeconds() + seconds);
+    }
+  } else {
+    // For time-only periods (hours, minutes, seconds), use millisecond arithmetic
+    const periodMs = parseISO8601Duration(periodStr);
+    if (periodMs === 0) {
+      console.warn('Invalid period duration:', periodStr);
+      return [];
     }
     
-    values.push(isoString);
-    currentTime += periodMs;
+    let currentTime = startTime;
+    while (currentTime <= endTime) {
+      let isoString = new Date(currentTime).toISOString();
+      if (!hasMilliseconds) {
+        isoString = isoString.replace(/\.\d{3}Z$/, 'Z');
+      }
+      values.push(isoString);
+      currentTime += periodMs;
+    }
   }
   
   return values;
