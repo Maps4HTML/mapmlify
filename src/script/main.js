@@ -740,7 +740,15 @@ function createQueryLink(layer, version, projectionCode, infoFormat, layerIndex,
   queryLink.setAttribute('data-query-link', 'true'); // Mark for easy identification
 
   // Build GetFeatureInfo URL template - same as GetMap but with different REQUEST and additional params
-  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imageFormat || 'image/png')}&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
+  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imageFormat || 'image/png')}`;
+  
+  // Only add TRANSPARENT=TRUE for formats that support transparency
+  const imgFormat = imageFormat || 'image/png';
+  if (imgFormat.toLowerCase().includes('png') || imgFormat.toLowerCase().includes('gif')) {
+    tref += '&TRANSPARENT=TRUE';
+  }
+  
+  tref += `&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
 
   // Add STYLES parameter if a style is selected
   if (styleName) {
@@ -1068,6 +1076,49 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   mapLayer.setAttribute('checked', '');
   mapLayer.setAttribute('data-wms-layer', layer.name);
 
+  // Add map-meta extent using geographic bounding box (WGS84)
+  const mapMeta = document.createElement('map-meta');
+  mapMeta.setAttribute('name', 'extent');
+  mapMeta.setAttribute('content', `top-left-longitude=${bbox.minx}, top-left-latitude=${bbox.maxy}, bottom-right-longitude=${bbox.maxx}, bottom-right-latitude=${bbox.miny}`);
+  mapLayer.appendChild(mapMeta);
+
+  // Add license link if available (before map-extent)
+  if (layer.licenseUrl) {
+    const licenseLink = document.createElement('map-link');
+    licenseLink.setAttribute('rel', 'license');
+    licenseLink.setAttribute('href', layer.licenseUrl);
+    if (layer.licenseTitle) {
+      licenseLink.setAttribute('title', `${layer.licenseTitle} for ${layer.title}`);
+    }
+    mapLayer.appendChild(licenseLink);
+    console.log('Added license link to layer:', layer.name, 'URL:', layer.licenseUrl, 'Title:', layer.licenseTitle || 'none');
+  } else {
+    console.log('No license URL for layer:', layer.name);
+  }
+  
+  // Add legend link for the selected style only (before map-extent)
+  if (layer.styles && layer.styles.length > 0 && styleName) {
+    const selectedStyle = layer.styles.find(style => style.name === styleName);
+    if (selectedStyle && selectedStyle.legendURLs && selectedStyle.legendURLs.length > 0) {
+      // Only add the first legend URL for the selected style
+      const legend = selectedStyle.legendURLs[0];
+      const legendLink = document.createElement('map-link');
+      legendLink.setAttribute('rel', 'legend');
+      legendLink.setAttribute('href', legend.href);
+      if (selectedStyle.title) {
+        legendLink.setAttribute('title', selectedStyle.title);
+      }
+      if (legend.width) {
+        legendLink.setAttribute('width', legend.width);
+      }
+      if (legend.height) {
+        legendLink.setAttribute('height', legend.height);
+      }
+      mapLayer.appendChild(legendLink);
+      console.log('Added legend link for selected style:', selectedStyle.title);
+    }
+  }
+
   // Create map-extent
   const mapExtent = document.createElement('map-extent');
   mapExtent.setAttribute('units', units);
@@ -1162,7 +1213,12 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   mapLink.setAttribute('rel', 'image');
 
   // Build URL manually to preserve template variables
-  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetMap&LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imgFormat)}&TRANSPARENT=TRUE`;
+  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetMap&LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imgFormat)}`;
+  
+  // Only add TRANSPARENT=TRUE for formats that support transparency
+  if (imgFormat.toLowerCase().includes('png') || imgFormat.toLowerCase().includes('gif')) {
+    tref += '&TRANSPARENT=TRUE';
+  }
   
   // Add STYLES parameter if a style is selected
   if (styleName) {
@@ -1204,44 +1260,6 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
     mapExtent.appendChild(queryLink);
   }
 
-  // Add license link if available (before map-extent)
-  if (layer.licenseUrl) {
-    const licenseLink = document.createElement('map-link');
-    licenseLink.setAttribute('rel', 'license');
-    licenseLink.setAttribute('href', layer.licenseUrl);
-    if (layer.licenseTitle) {
-      licenseLink.setAttribute('title', `${layer.licenseTitle} for ${layer.title}`);
-    }
-    mapLayer.appendChild(licenseLink);
-    console.log('Added license link to layer:', layer.name, 'URL:', layer.licenseUrl, 'Title:', layer.licenseTitle || 'none');
-  } else {
-    console.log('No license URL for layer:', layer.name);
-  }
-  
-  // Add legend link for the selected style only (before map-extent)
-  if (layer.styles && layer.styles.length > 0 && styleName) {
-    const selectedStyle = layer.styles.find(style => style.name === styleName);
-    if (selectedStyle && selectedStyle.legendURLs && selectedStyle.legendURLs.length > 0) {
-      // Only add the first legend URL for the selected style
-      const legend = selectedStyle.legendURLs[0];
-      const legendLink = document.createElement('map-link');
-      legendLink.setAttribute('rel', 'legend');
-      legendLink.setAttribute('href', legend.href);
-      if (selectedStyle.title) {
-        legendLink.setAttribute('title', selectedStyle.title);
-      }
-      if (legend.width) {
-        legendLink.setAttribute('width', legend.width);
-      }
-      if (legend.height) {
-        legendLink.setAttribute('height', legend.height);
-      }
-      mapLayer.appendChild(legendLink);
-      console.log('Added legend link for selected style:', selectedStyle.title);
-    }
-  }
-
-  // Add map-extent after license and legend links
   mapLayer.appendChild(mapExtent);
   
   viewer.appendChild(mapLayer);
