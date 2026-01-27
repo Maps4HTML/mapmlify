@@ -10,6 +10,70 @@ function wgs84ToWebMercator(lon, lat) {
   return { x, y };
 }
 
+// Parse ISO8601 duration string (e.g., PT10M, PT1H, P1D) and return milliseconds
+function parseISO8601Duration(duration) {
+  const match = duration.match(/P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?/);
+  if (!match) return 0;
+  
+  const years = parseInt(match[1] || 0);
+  const months = parseInt(match[2] || 0);
+  const days = parseInt(match[3] || 0);
+  const hours = parseInt(match[4] || 0);
+  const minutes = parseInt(match[5] || 0);
+  const seconds = parseFloat(match[6] || 0);
+  
+  // Approximate conversion (not perfect for months/years, but works for typical WMS use)
+  return (
+    years * 365 * 24 * 60 * 60 * 1000 +
+    months * 30 * 24 * 60 * 60 * 1000 +
+    days * 24 * 60 * 60 * 1000 +
+    hours * 60 * 60 * 1000 +
+    minutes * 60 * 1000 +
+    seconds * 1000
+  );
+}
+
+// Parse ISO8601 interval notation and generate array of values
+// Format: start/end/period (e.g., 2026-01-19T12:00:00Z/2026-01-22T12:00:00Z/PT1H)
+function parseISO8601Interval(intervalString) {
+  const parts = intervalString.trim().split('/');
+  if (parts.length !== 3) {
+    // Not an interval, might be discrete values (comma-separated)
+    return intervalString.split(',').map(v => v.trim());
+  }
+  
+  const [startStr, endStr, periodStr] = parts;
+  const startTime = new Date(startStr).getTime();
+  const endTime = new Date(endStr).getTime();
+  const periodMs = parseISO8601Duration(periodStr);
+  
+  if (isNaN(startTime) || isNaN(endTime) || periodMs === 0) {
+    console.warn('Invalid ISO8601 interval:', intervalString);
+    return [];
+  }
+  
+  const values = [];
+  let currentTime = startTime;
+  
+  // Detect if original format includes milliseconds
+  const hasMilliseconds = startStr.includes('.');
+  
+  // Generate values from start to end with period increments
+  while (currentTime <= endTime) {
+    let isoString = new Date(currentTime).toISOString();
+    
+    // Remove milliseconds if original format didn't have them
+    if (!hasMilliseconds) {
+      isoString = isoString.replace(/\.\d{3}Z$/, 'Z');
+    }
+    
+    values.push(isoString);
+    currentTime += periodMs;
+  }
+  
+  return values;
+}
+
 const wmsUrlInput = document.getElementById('wms-url');
 const loadBtn = document.getElementById('load-btn');
 const serviceInfo = document.getElementById('service-info');
@@ -69,6 +133,9 @@ loadBtn.addEventListener('click', async () => {
     loadBtn.textContent = 'Loading...';
 
     await loadWMSCapabilities(url);
+    
+    // Clear input after successful load
+    wmsUrlInput.value = '';
   } catch (error) {
     console.error('Error loading WMS capabilities:', error);
     alert('Failed to load WMS capabilities. Check console for details.');
@@ -108,7 +175,7 @@ async function loadWMSCapabilities(url) {
   const serviceInfo = extractServiceInfo(xmlDoc, currentWmsBaseUrl);
 
   // Display service information
-  displayServiceInfo(serviceInfo, usedProxy);
+  displayServiceInfo(serviceInfo, usedProxy, url);
 }
 
 function extractServiceInfo(xmlDoc, baseUrl) {
@@ -202,18 +269,35 @@ function extractServiceInfo(xmlDoc, baseUrl) {
       }
     });
 
-    // Extract Attribution OnlineResource for license link
+    // Extract MetadataURL or Attribution OnlineResource for license link
     let licenseUrl = '';
     let licenseTitle = '';
-    const attribution = parentLayer.querySelector(':scope > Attribution');
-    if (attribution) {
-      licenseTitle = attribution.querySelector('Title')?.textContent || '';
-      const onlineResource = attribution.querySelector('OnlineResource');
+    
+    // Priority 1: Check for MetadataURL (layer-specific metadata)
+    const metadataURL = parentLayer.querySelector(':scope > MetadataURL');
+    if (metadataURL) {
+      const onlineResource = metadataURL.querySelector('OnlineResource');
       if (onlineResource) {
         licenseUrl = onlineResource.getAttribute('xlink:href') || onlineResource.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+        const metadataType = metadataURL.getAttribute('type');
+        // Append "Metadata" to type (e.g., "TC211" becomes "TC211 Metadata")
+        licenseTitle = metadataType ? `${metadataType} Metadata` : 'Layer Metadata';
       }
     }
-    // Use service-level license URL and title as fallback
+    
+    // Priority 2: Check for Attribution OnlineResource if no MetadataURL
+    if (!licenseUrl) {
+      const attribution = parentLayer.querySelector(':scope > Attribution');
+      if (attribution) {
+        licenseTitle = attribution.querySelector('Title')?.textContent || '';
+        const onlineResource = attribution.querySelector('OnlineResource');
+        if (onlineResource) {
+          licenseUrl = onlineResource.getAttribute('xlink:href') || onlineResource.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+        }
+      }
+    }
+    
+    // Priority 3: Use service-level license URL and title as fallback
     if (!licenseUrl && serviceLicenseUrl) {
       licenseUrl = serviceLicenseUrl;
       licenseTitle = serviceLicenseTitle;
@@ -231,6 +315,31 @@ function extractServiceInfo(xmlDoc, baseUrl) {
     if (layerCRS.has('EPSG:3978')) supportedProjections.push('CBMTILE');
     if (layerCRS.has('CRS:84') || layerCRS.has('EPSG:4326')) supportedProjections.push('WGS84');
     if (layerCRS.has('EPSG:5936')) supportedProjections.push('APSTILE');
+
+    // Extract dimensions
+    const dimensions = [];
+    const dimensionElements = parentLayer.querySelectorAll(':scope > Dimension');
+    dimensionElements.forEach(dimEl => {
+      const dimName = dimEl.getAttribute('name');
+      const dimDefault = dimEl.getAttribute('default');
+      const dimUnits = dimEl.getAttribute('units');
+      const dimContent = dimEl.textContent.trim();
+      
+      if (dimName && dimContent) {
+        // Parse dimension values
+        const values = parseISO8601Interval(dimContent);
+        
+        if (values.length > 0) {
+          dimensions.push({
+            name: dimName,
+            units: dimUnits || '',
+            default: dimDefault || values[0],
+            values: values
+          });
+          console.log('Parsed dimension:', dimName, 'with', values.length, 'values');
+        }
+      }
+    });
 
     // Get bounding box (try EX_GeographicBoundingBox for 1.3.0, LatLonBoundingBox for 1.1.1)
     let bbox = parentLayer.querySelector(':scope > EX_GeographicBoundingBox');
@@ -262,8 +371,9 @@ function extractServiceInfo(xmlDoc, baseUrl) {
         licenseUrl,
         licenseTitle,
         supportedProjections,
+        dimensions,
       });
-      console.log('Layer:', name, 'Projections:', supportedProjections.join(', ') || 'none');
+      console.log('Layer:', name, 'Projections:', supportedProjections.join(', ') || 'none', 'Dimensions:', dimensions.length);
     }
   });
 
@@ -279,7 +389,7 @@ function extractServiceInfo(xmlDoc, baseUrl) {
   };
 }
 
-function displayServiceInfo(info, usedProxy) {
+function displayServiceInfo(info, usedProxy, loadedUrl) {
   const proxyNote = usedProxy
     ? '<p><em>(Loaded via CORS proxy)</em></p>'
     : '';
@@ -330,6 +440,15 @@ function displayServiceInfo(info, usedProxy) {
           </select>
         </div>
         ` : ''}
+        ${layer.dimensions && layer.dimensions.length > 0 ? layer.dimensions.map((dim, dimIdx) => `
+        <div class="dimension-selector">
+          <input type="checkbox" id="dim-enabled-${index}-${dimIdx}" class="dimension-checkbox" data-dimension-name="${dim.name}" checked />
+          <label for="dim-${index}-${dimIdx}">${dim.name}:</label>
+          <select id="dim-${index}-${dimIdx}" class="dimension-select" data-dimension-name="${dim.name}">
+            ${dim.values.map(val => `<option value="${val}"${val === dim.default ? ' selected' : ''}>${val}</option>`).join('')}
+          </select>
+        </div>
+        `).join('') : ''}
         ${info.getMapFormats && info.getMapFormats.length > 0 ? `
         <div class="format-selector">
           <label for="img-format-${index}">Image Format:</label>
@@ -358,6 +477,7 @@ function displayServiceInfo(info, usedProxy) {
       <summary><strong>Abstract</strong></summary>
       <p>${info.abstract}</p>
     </details>
+    <p><strong>Loaded URL:</strong> <a href="${loadedUrl}" target="_blank" rel="noopener noreferrer">${loadedUrl}</a></p>
     ${proxyNote}
     <h3>Available Layers</h3>
     <div class="layers-list">
@@ -492,6 +612,56 @@ function displayServiceInfo(info, usedProxy) {
         });
       }
     }
+
+    // Add event listeners to dimension selectors and checkboxes
+    if (layer.dimensions && layer.dimensions.length > 0) {
+      layer.dimensions.forEach((dim, dimIdx) => {
+        const dimensionSelect = document.getElementById(`dim-${index}-${dimIdx}`);
+        const dimensionCheckbox = document.getElementById(`dim-enabled-${index}-${dimIdx}`);
+        
+        if (dimensionSelect) {
+          dimensionSelect.addEventListener('change', (e) => {
+            const layerCheckbox = document.getElementById(`layer-${index}`);
+            if (layerCheckbox.checked) {
+              const queryCheckbox = document.getElementById(`query-${index}`);
+              const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+              const formatSelect = document.getElementById(`format-${index}`);
+              const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+              const styleSelect = document.getElementById(`style-${index}`);
+              const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+              const imgFormatSelect = document.getElementById(`img-format-${index}`);
+              const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+              const projectionSelect = document.getElementById(`projection-${index}`);
+              const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+              // Recreate viewer with new dimension value
+              removeViewerForLayer(index);
+              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
+            }
+          });
+        }
+        
+        if (dimensionCheckbox) {
+          dimensionCheckbox.addEventListener('change', (e) => {
+            const layerCheckbox = document.getElementById(`layer-${index}`);
+            if (layerCheckbox.checked) {
+              const queryCheckbox = document.getElementById(`query-${index}`);
+              const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+              const formatSelect = document.getElementById(`format-${index}`);
+              const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+              const styleSelect = document.getElementById(`style-${index}`);
+              const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+              const imgFormatSelect = document.getElementById(`img-format-${index}`);
+              const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+              const projectionSelect = document.getElementById(`projection-${index}`);
+              const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+              // Recreate viewer when dimension is enabled/disabled
+              removeViewerForLayer(index);
+              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
+            }
+          });
+        }
+      });
+    }
   });
 }
 
@@ -526,13 +696,30 @@ function buildGetMapUrl(baseUrl, layer, version, usedProxy, styleName) {
   return url;
 }
 
-function createQueryLink(layer, version, projectionCode, infoFormat) {
+function createQueryLink(layer, version, projectionCode, infoFormat, layerIndex, styleName, imageFormat) {
   const queryLink = document.createElement('map-link');
   queryLink.setAttribute('rel', 'query');
   queryLink.setAttribute('data-query-link', 'true'); // Mark for easy identification
 
   // Build GetFeatureInfo URL template - same as GetMap but with different REQUEST and additional params
-  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
+  let tref = `${currentWmsBaseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imageFormat || 'image/png')}&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
+
+  // Add STYLES parameter if a style is selected
+  if (styleName) {
+    tref += '&STYLES={style}';
+  }
+
+  // Add dimension parameters to query link only if enabled in UI
+  if (layer.dimensions && layer.dimensions.length > 0) {
+    layer.dimensions.forEach((dimension, dimIdx) => {
+      const dimensionCheckbox = layerIndex !== undefined ? document.getElementById(`dim-enabled-${layerIndex}-${dimIdx}`) : null;
+      const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
+      
+      if (isDimensionEnabled) {
+        tref += `&${dimension.name}={${dimension.name}}`;
+      }
+    });
+  }
 
   if (version.startsWith('1.3')) {
     tref += `&CRS=${projectionCode}`;
@@ -770,7 +957,7 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
   }
 
   // Add the layer to this viewer
-  addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat);
+  addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat, index);
 
   // Add to container
   container.appendChild(viewer);
@@ -787,7 +974,7 @@ function removeViewerForLayer(index) {
   console.log('Removed viewer for layer index:', index);
 }
 
-function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat) {
+function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, layerIndex) {
   const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
   const { bbox } = layer;
 
@@ -894,6 +1081,44 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
     mapExtent.appendChild(mapSelect);
   }
 
+  // Add dimension selectors if dimensions are available and enabled
+  if (layer.dimensions && layer.dimensions.length > 0) {
+    layer.dimensions.forEach((dimension, dimIdx) => {
+      // Check if this dimension is enabled in the UI
+      const dimensionCheckbox = layerIndex !== undefined ? document.getElementById(`dim-enabled-${layerIndex}-${dimIdx}`) : null;
+      const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
+      
+      if (!isDimensionEnabled) {
+        console.log('Skipping disabled dimension:', dimension.name);
+        return;
+      }
+      
+      // Get the selected value from the UI dropdown
+      const dimensionSelect = layerIndex !== undefined ? document.getElementById(`dim-${layerIndex}-${dimIdx}`) : null;
+      const selectedValue = dimensionSelect ? dimensionSelect.value : dimension.default;
+      
+      const mapSelect = document.createElement('map-select');
+      mapSelect.setAttribute('id', `${dimension.name}-selector`);
+      mapSelect.setAttribute('name', dimension.name);
+      
+      dimension.values.forEach((value) => {
+        const mapOption = document.createElement('map-option');
+        mapOption.setAttribute('value', value);
+        mapOption.textContent = value;
+        
+        // Mark the selected value from UI
+        if (value === selectedValue) {
+          mapOption.setAttribute('selected', '');
+        }
+        
+        mapSelect.appendChild(mapOption);
+      });
+      
+      mapExtent.appendChild(mapSelect);
+      console.log('Added dimension selector for:', dimension.name, 'with', dimension.values.length, 'options');
+    });
+  }
+
   // Create map-link for image
   const mapLink = document.createElement('map-link');
   mapLink.setAttribute('rel', 'image');
@@ -904,6 +1129,18 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   // Add STYLES parameter if a style is selected
   if (styleName) {
     tref += '&STYLES={style}';
+  }
+
+  // Add dimension parameters only if enabled in UI
+  if (layer.dimensions && layer.dimensions.length > 0) {
+    layer.dimensions.forEach((dimension, dimIdx) => {
+      const dimensionCheckbox = layerIndex !== undefined ? document.getElementById(`dim-enabled-${layerIndex}-${dimIdx}`) : null;
+      const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
+      
+      if (isDimensionEnabled) {
+        tref += `&${dimension.name}={${dimension.name}}`;
+      }
+    });
   }
 
   if (version.startsWith('1.3')) {
@@ -925,7 +1162,7 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
 
   // Add query link if query is enabled
   if (queryEnabled && layer.queryable) {
-    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat);
+    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat, layerIndex, styleName, imgFormat);
     mapExtent.appendChild(queryLink);
   }
 
@@ -935,7 +1172,7 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
     licenseLink.setAttribute('rel', 'license');
     licenseLink.setAttribute('href', layer.licenseUrl);
     if (layer.licenseTitle) {
-      licenseLink.setAttribute('title', layer.licenseTitle);
+      licenseLink.setAttribute('title', `${layer.licenseTitle} for ${layer.title}`);
     }
     mapLayer.appendChild(licenseLink);
     console.log('Added license link to layer:', layer.name, 'URL:', layer.licenseUrl, 'Title:', layer.licenseTitle || 'none');
@@ -943,28 +1180,27 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
     console.log('No license URL for layer:', layer.name);
   }
   
-  // Add legend links for each style (before map-extent) - only first legend per style
-  if (layer.styles && layer.styles.length > 0) {
-    layer.styles.forEach(style => {
-      if (style.legendURLs && style.legendURLs.length > 0) {
-        // Only add the first legend URL to avoid issues with map-link component
-        const legend = style.legendURLs[0];
-        const legendLink = document.createElement('map-link');
-        legendLink.setAttribute('rel', 'legend');
-        legendLink.setAttribute('href', legend.href);
-        if (style.title) {
-          legendLink.setAttribute('title', style.title);
-        }
-        if (legend.width) {
-          legendLink.setAttribute('width', legend.width);
-        }
-        if (legend.height) {
-          legendLink.setAttribute('height', legend.height);
-        }
-        mapLayer.appendChild(legendLink);
-        console.log('Added legend link for style:', style.title);
+  // Add legend link for the selected style only (before map-extent)
+  if (layer.styles && layer.styles.length > 0 && styleName) {
+    const selectedStyle = layer.styles.find(style => style.name === styleName);
+    if (selectedStyle && selectedStyle.legendURLs && selectedStyle.legendURLs.length > 0) {
+      // Only add the first legend URL for the selected style
+      const legend = selectedStyle.legendURLs[0];
+      const legendLink = document.createElement('map-link');
+      legendLink.setAttribute('rel', 'legend');
+      legendLink.setAttribute('href', legend.href);
+      if (selectedStyle.title) {
+        legendLink.setAttribute('title', selectedStyle.title);
       }
-    });
+      if (legend.width) {
+        legendLink.setAttribute('width', legend.width);
+      }
+      if (legend.height) {
+        legendLink.setAttribute('height', legend.height);
+      }
+      mapLayer.appendChild(legendLink);
+      console.log('Added legend link for selected style:', selectedStyle.title);
+    }
   }
 
   // Add map-extent after license and legend links
@@ -1015,7 +1251,13 @@ function updateLayerQueryInViewer(index, layerName, queryEnabled, layer, version
         projectionCode = 'EPSG:3857';
     }
     
-    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat);
+    // Get current style and image format from UI
+    const styleSelect = document.getElementById(`style-${index}`);
+    const styleName = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+    const imgFormatSelect = document.getElementById(`img-format-${index}`);
+    const imgFormat = imgFormatSelect ? imgFormatSelect.value : 'image/png';
+    
+    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat, index, styleName, imgFormat);
     mapExtent.appendChild(queryLink);
     console.log('Added/updated query support to layer:', layerName, 'with format:', selectedFormat);
   } else if (!queryEnabled && existingQueryLink) {
