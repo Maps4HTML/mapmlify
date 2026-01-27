@@ -12,8 +12,6 @@ The `<map-input>` declares a variable that will be set and used by the polyfill
 according to its attributes, as the map changes viewport extent in response to 
 user gestures.
 
-<iframe src="../../../demo/map-input-demo/" title="MapML Demo" height="410" width="100%" scrolling="no" frameBorder="0"></iframe>
-
 ## Attributes
 
 ### `name`

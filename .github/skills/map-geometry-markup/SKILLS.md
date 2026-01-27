@@ -7,8 +7,6 @@ A `<map-geometry>` element is a child of `<map-feature>` and is used to describe
 
 A `<map-geometry>` element has one child element, which can be a `<map-point>`, `<map-linestring>`, `<map-polygon>`, `<map-multipoint>`, `<map-multilinestring>`, `<map-multipolygon>`, or `<map-geometrycollection>`.
 
-<iframe src="../../../demo/map-geometry-demo/" title="MapML Demo" height="410" width="100%" scrolling="no" frameBorder="0"></iframe>
-
 ## Attributes
 
 ### `cs`
