@@ -1,13 +1,17 @@
-https://maps.geogratis.gc.ca/wms/toporama_en?REQUEST=GETCAPABILITIES&VERSION=1.1.1
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CIOPS-West_SeaWaterSalinity_16m
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=ALERTS
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CURRENT_CONDITIONS
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CoastalFloodRiskIndex
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RAQDPS-FW.CE_HOTSPOTS.2020
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WildfireHotspots
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RDAQA.CE_NO2-MAvg
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WEATHERADIO
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WCPS_1km_SeaIceVol
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WCPS_1km_SeaSfcHeight
-https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=Public-Standard-Forecast-Zones
-https://cwfis.cfs.nrcan.gc.ca/geoserver/public/wms?service=WMS&version=1.3.0&request=GetCapabilities
+National Forest Inventory kNN k-Nearest Neighbour, https://nfi.nfis.org/mapserver/cgi-bin/nfis-kNN.cgi?SERVICE=WMS&VERSION=1.3.0&REQUEST=GETCAPABILITIES
+Toporama (1.1.1), https://maps.geogratis.gc.ca/wms/toporama_en?REQUEST=GETCAPABILITIES&VERSION=1.1.1
+Canvec, https://maps.geogratis.gc.ca/wms/canvec_en?version=1.3.0&service=WMS&request=GetCapabilities
+Colour Shaded Relief - Canada, http://maps.geogratis.gc.ca/wms/elevation_en?SERVICE=WMS&VERSION=1.3.0&request=GetCapabilities
+CIOPS West - Sea Water Salinity, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CIOPS-West_SeaWaterSalinity_16m
+Weather Alerts, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=ALERTS
+Current Conditions, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CURRENT_CONDITIONS
+Coastal Flood Risk Index, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CoastalFloodRiskIndex
+Fire Weather Hotspots (2020), https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RAQDPS-FW.CE_HOTSPOTS.2020
+Wildfire Hotspots, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WildfireHotspots
+Air Quality - NO2 Monthly Average, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RDAQA.CE_NO2-MAvg
+Weather Radio Stations, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WEATHERADIO
+Sea Ice Volume (1km), https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WCPS_1km_SeaIceVol
+Sea Surface Height (1km), https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WCPS_1km_SeaSfcHeight
+Public Standard Forecast Zones, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=Public-Standard-Forecast-Zones
+Canadian Wildfire Information System, https://cwfis.cfs.nrcan.gc.ca/geoserver/public/wms?service=WMS&version=1.3.0&request=GetCapabilities
+

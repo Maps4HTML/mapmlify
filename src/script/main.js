@@ -23,16 +23,26 @@ async function loadCapabilitiesPresets() {
   try {
     const response = await fetch('capabilities.txt');
     const text = await response.text();
-    const urls = text.split('\n').filter(line => line.trim());
+    const lines = text.split('\n').filter(line => line.trim());
     
     const datalist = document.getElementById('wms-presets');
     if (!datalist) return;
     
     // Clear existing options and populate with URLs from file
     datalist.innerHTML = '';
-    urls.forEach((url) => {
+    lines.forEach((line) => {
       const option = document.createElement('option');
-      option.value = url;
+      // Check if line has label,url format
+      if (line.includes(',')) {
+        const commaIndex = line.indexOf(',');
+        const label = line.substring(0, commaIndex).trim();
+        const url = line.substring(commaIndex + 1).trim();
+        option.value = url;
+        option.textContent = label;
+      } else {
+        // Just URL, no label
+        option.value = line;
+      }
       datalist.appendChild(option);
     });
     
@@ -136,6 +146,15 @@ function extractServiceInfo(xmlDoc, baseUrl) {
     getFeatureInfoFormats.push(formatEl.textContent);
   });
 
+  // Extract root CRS/SRS from Capability > Layer
+  const rootCRS = new Set();
+  if (rootLayer) {
+    rootLayer.querySelectorAll(':scope > CRS, :scope > SRS').forEach(crsEl => {
+      rootCRS.add(crsEl.textContent.trim());
+    });
+  }
+  console.log('Root CRS:', Array.from(rootCRS));
+
   // Extract layers
   const layers = [];
   const layerElements = xmlDoc.querySelectorAll('Layer > Name');
@@ -200,6 +219,19 @@ function extractServiceInfo(xmlDoc, baseUrl) {
       licenseTitle = serviceLicenseTitle;
     }
 
+    // Extract layer-specific CRS and combine with root CRS
+    const layerCRS = new Set(rootCRS);
+    parentLayer.querySelectorAll(':scope > CRS, :scope > SRS').forEach(crsEl => {
+      layerCRS.add(crsEl.textContent.trim());
+    });
+
+    // Map CRS to projections
+    const supportedProjections = [];
+    if (layerCRS.has('EPSG:3857')) supportedProjections.push('OSMTILE');
+    if (layerCRS.has('EPSG:3978')) supportedProjections.push('CBMTILE');
+    if (layerCRS.has('CRS:84') || layerCRS.has('EPSG:4326')) supportedProjections.push('WGS84');
+    if (layerCRS.has('EPSG:5936')) supportedProjections.push('APSTILE');
+
     // Get bounding box (try EX_GeographicBoundingBox for 1.3.0, LatLonBoundingBox for 1.1.1)
     let bbox = parentLayer.querySelector(':scope > EX_GeographicBoundingBox');
     let minx, miny, maxx, maxy;
@@ -229,8 +261,9 @@ function extractServiceInfo(xmlDoc, baseUrl) {
         styles,
         licenseUrl,
         licenseTitle,
+        supportedProjections,
       });
-      console.log('Layer:', name, 'License URL:', licenseUrl || 'none');
+      console.log('Layer:', name, 'Projections:', supportedProjections.join(', ') || 'none');
     }
   });
 
@@ -265,6 +298,14 @@ function displayServiceInfo(info, usedProxy) {
           <label for="layer-${index}"><strong>${layer.title}</strong></label>
         </div>
         <p class="layer-name">Name: ${layer.name}</p>
+        ${layer.supportedProjections && layer.supportedProjections.length > 0 ? `
+        <div class="projection-selector">
+          <label for="projection-${index}">Projection:</label>
+          <select id="projection-${index}" class="projection-select">
+            ${layer.supportedProjections.map(proj => `<option value="${proj}"${proj === 'OSMTILE' ? ' selected' : ''}>${proj}</option>`).join('')}
+          </select>
+        </div>
+        ` : ''}
         ${layer.abstract ? `
         <details class="layer-abstract">
           <summary>Abstract</summary>
@@ -339,7 +380,9 @@ function displayServiceInfo(info, usedProxy) {
         const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
         const imgFormatSelect = document.getElementById(`img-format-${index}`);
         const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
-        createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat);
+        const projectionSelect = document.getElementById(`projection-${index}`);
+        const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+        createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
       } else {
         removeViewerForLayer(index);
       }
@@ -394,9 +437,11 @@ function displayServiceInfo(info, usedProxy) {
             const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
             const imgFormatSelect = document.getElementById(`img-format-${index}`);
             const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+            const projectionSelect = document.getElementById(`projection-${index}`);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
             // Recreate viewer with new style
             removeViewerForLayer(index);
-            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, e.target.value, selectedImgFormat);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, e.target.value, selectedImgFormat, selectedProjection);
           }
         });
       }
@@ -415,9 +460,34 @@ function displayServiceInfo(info, usedProxy) {
             const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
             const styleSelect = document.getElementById(`style-${index}`);
             const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+            const projectionSelect = document.getElementById(`projection-${index}`);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
             // Recreate viewer with new image format
             removeViewerForLayer(index);
-            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, e.target.value);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, e.target.value, selectedProjection);
+          }
+        });
+      }
+    }
+
+    // Add event listener to projection selector if available
+    if (layer.supportedProjections && layer.supportedProjections.length > 0) {
+      const projectionSelect = document.getElementById(`projection-${index}`);
+      if (projectionSelect) {
+        projectionSelect.addEventListener('change', (e) => {
+          const layerCheckbox = document.getElementById(`layer-${index}`);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById(`query-${index}`);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById(`format-${index}`);
+            const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+            const styleSelect = document.getElementById(`style-${index}`);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+            const imgFormatSelect = document.getElementById(`img-format-${index}`);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+            // Recreate viewer with new projection
+            removeViewerForLayer(index);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, e.target.value);
           }
         });
       }
@@ -456,7 +526,7 @@ function buildGetMapUrl(baseUrl, layer, version, usedProxy, styleName) {
   return url;
 }
 
-function createQueryLink(layer, version, projectionCode, useWebMercator, infoFormat) {
+function createQueryLink(layer, version, projectionCode, infoFormat) {
   const queryLink = document.createElement('map-link');
   queryLink.setAttribute('rel', 'query');
   queryLink.setAttribute('data-query-link', 'true'); // Mark for easy identification
@@ -466,11 +536,12 @@ function createQueryLink(layer, version, projectionCode, useWebMercator, infoFor
 
   if (version.startsWith('1.3')) {
     tref += `&CRS=${projectionCode}`;
-    // EPSG:3857 uses x,y order; EPSG:4326 in WMS 1.3.0 uses y,x order
-    if (useWebMercator) {
-      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
-    } else {
+    // WMS 1.3.0 with EPSG:4326 requires latitude,longitude order (ymin,xmin,ymax,xmax)
+    // All other CRS use standard xmin,ymin,xmax,ymax order
+    if (projectionCode === 'EPSG:4326') {
       tref += '&BBOX={ymin},{xmin},{ymax},{xmax}';
+    } else {
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
     }
   } else {
     tref += `&SRS=${projectionCode}`;
@@ -505,10 +576,27 @@ function updateLayerQuery(layerName, queryEnabled, layer, version, selectedForma
     }
     // Add query link with selected format
     const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
-    const useWebMercator = viewerProjection === 'OSMTILE';
-    const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
     
-    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    // Map projection to CRS code (same logic as addLayerToViewer)
+    let projectionCode;
+    switch (viewerProjection) {
+      case 'OSMTILE':
+        projectionCode = 'EPSG:3857';
+        break;
+      case 'CBMTILE':
+        projectionCode = 'EPSG:3978';
+        break;
+      case 'WGS84':
+        projectionCode = 'EPSG:4326';
+        break;
+      case 'APSTILE':
+        projectionCode = 'EPSG:5936';
+        break;
+      default:
+        projectionCode = 'EPSG:3857';
+    }
+    
+    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat);
     mapExtent.appendChild(queryLink);
     console.log('Added/updated query support to layer:', layerName, 'with format:', selectedFormat);
   } else if (!queryEnabled && existingQueryLink) {
@@ -518,78 +606,168 @@ function updateLayerQuery(layerName, queryEnabled, layer, version, selectedForma
   }
 }
 
-function createViewerForLayer(index, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat) {
+function createViewerForLayer(index, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, projection) {
   const container = document.getElementById(`viewer-container-${index}`);
   if (!container) return;
 
   // Default to image/png if not specified
   const imgFormat = imageFormat || 'image/png';
+  
+  // Default to OSMTILE if no projection specified
+  const selectedProjection = projection || 'OSMTILE';
 
   // Create mapml-viewer element
   const viewer = document.createElement('mapml-viewer');
-  viewer.setAttribute('projection', 'OSMTILE');
+  viewer.setAttribute('projection', selectedProjection);
   viewer.setAttribute('controls', '');
   viewer.setAttribute('zoom', '0');
   
-  // Center on layer bbox
+  // Center on layer bbox (EX_GeographicBoundingBox values are in WGS84)
   const { bbox } = layer;
   const centerLat = (parseFloat(bbox.miny) + parseFloat(bbox.maxy)) / 2;
   const centerLon = (parseFloat(bbox.minx) + parseFloat(bbox.maxx)) / 2;
   viewer.setAttribute('lat', centerLat.toString());
   viewer.setAttribute('lon', centerLon.toString());
 
-  // Add Canada Base Map layer
-  const osmLayer = document.createElement('map-layer');
-  osmLayer.setAttribute('label', 'Canada Base Map');
-  osmLayer.setAttribute('checked', '');
-  
-  const osmExtent = document.createElement('map-extent');
-  osmExtent.setAttribute('units', 'OSMTILE');
-  osmExtent.setAttribute('checked', '');
-  
-  // Add zoom input
-  const zoomInput = document.createElement('map-input');
-  zoomInput.setAttribute('name', 'z');
-  zoomInput.setAttribute('type', 'zoom');
-  zoomInput.setAttribute('min', '0');
-  zoomInput.setAttribute('max', '15');
-  zoomInput.setAttribute('value', '15');
-  osmExtent.appendChild(zoomInput);
-  
-  // Add row input
-  const yInput = document.createElement('map-input');
-  yInput.setAttribute('name', 'y');
-  yInput.setAttribute('type', 'location');
-  yInput.setAttribute('units', 'tilematrix');
-  yInput.setAttribute('axis', 'row');
-  yInput.setAttribute('min', '0');
-  yInput.setAttribute('max', '32768');
-  osmExtent.appendChild(yInput);
-  
-  // Add column input
-  const xInput = document.createElement('map-input');
-  xInput.setAttribute('name', 'x');
-  xInput.setAttribute('type', 'location');
-  xInput.setAttribute('units', 'tilematrix');
-  xInput.setAttribute('axis', 'column');
-  xInput.setAttribute('min', '0');
-  xInput.setAttribute('max', '32768');
-  osmExtent.appendChild(xInput);
-  
-  // Add base map tile link
-  const tileLink1 = document.createElement('map-link');
-  tileLink1.setAttribute('rel', 'tile');
-  tileLink1.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_CBCT_GEOM_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
-  osmExtent.appendChild(tileLink1);
-  
-  // Add labels tile link
-  const tileLink2 = document.createElement('map-link');
-  tileLink2.setAttribute('rel', 'tile');
-  tileLink2.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_TXT_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
-  osmExtent.appendChild(tileLink2);
-  
-  osmLayer.appendChild(osmExtent);
-  viewer.appendChild(osmLayer);
+  // Add basemap layer based on projection (skip WGS84 for now)
+  if (selectedProjection !== 'WGS84') {
+    const baseLayer = document.createElement('map-layer');
+    const baseExtent = document.createElement('map-extent');
+    baseExtent.setAttribute('checked', '');
+    
+    if (selectedProjection === 'OSMTILE') {
+      baseLayer.setAttribute('label', 'Canada Base Map');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'OSMTILE');
+      
+      // Add zoom input
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '15');
+      zoomInput.setAttribute('value', '15');
+      baseExtent.appendChild(zoomInput);
+      
+      // Add row input
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      // Add column input
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      // Add base map tile links
+      const tileLink1 = document.createElement('map-link');
+      tileLink1.setAttribute('rel', 'tile');
+      tileLink1.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_CBCT_GEOM_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink1);
+      
+      const tileLink2 = document.createElement('map-link');
+      tileLink2.setAttribute('rel', 'tile');
+      tileLink2.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_TXT_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink2);
+      
+    } else if (selectedProjection === 'CBMTILE') {
+      baseLayer.setAttribute('label', 'Canada Base Map - Transportation');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'CBMTILE');
+      baseExtent.setAttribute('label', 'Canada Base Map - Transportation');
+      
+      // Add license link
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/free-data-geogratis/licence/17285');
+      licenseLink.setAttribute('title', 'Canada Base Map © Natural Resources Canada');
+      baseExtent.appendChild(licenseLink);
+      
+      // Add zoom input
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('value', '17');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '17');
+      baseExtent.appendChild(zoomInput);
+      
+      // Add row input
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      // Add column input
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      // Add tile link
+      const tileLink = document.createElement('map-link');
+      tileLink.setAttribute('rel', 'tile');
+      tileLink.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT3978/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink);
+      
+    } else if (selectedProjection === 'APSTILE') {
+      baseLayer.setAttribute('label', 'Arctic Ocean Basemap MapML Service');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'APSTILE');
+      baseExtent.setAttribute('label', 'Arctic Ocean Basemap MapML Service');
+      
+      // Add license link
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://www.esri.com/legal/software-license');
+      licenseLink.setAttribute('title', 'Sources: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors');
+      baseExtent.appendChild(licenseLink);
+      
+      // Add zoom input
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('value', '10');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '10');
+      baseExtent.appendChild(zoomInput);
+      
+      // Add row input
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      // Add column input
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      // Add tile link
+      const tileLink = document.createElement('map-link');
+      tileLink.setAttribute('rel', 'tile');
+      tileLink.setAttribute('tref', 'https://server.arcgisonline.com/arcgis/rest/services/Polar/Arctic_Ocean_Base/MapServer/tile/{z}/{y}/{x}');
+      baseExtent.appendChild(tileLink);
+    }
+    
+    baseLayer.appendChild(baseExtent);
+    viewer.appendChild(baseLayer);
+  }
 
   // Add the layer to this viewer
   addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat);
@@ -613,10 +791,29 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
   const { bbox } = layer;
 
-  // Determine if we should use EPSG:3857 (Web Mercator) or EPSG:4326 (WGS84)
-  const useWebMercator = viewerProjection === 'OSMTILE';
-  const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
-  const units = useWebMercator ? 'OSMTILE' : 'WGS84';
+  // Map projection to CRS code and units
+  let projectionCode, units;
+  switch (viewerProjection) {
+    case 'OSMTILE':
+      projectionCode = 'EPSG:3857';
+      units = 'OSMTILE';
+      break;
+    case 'CBMTILE':
+      projectionCode = 'EPSG:3978';
+      units = 'CBMTILE';
+      break;
+    case 'WGS84':
+      projectionCode = 'EPSG:4326';
+      units = 'WGS84';
+      break;
+    case 'APSTILE':
+      projectionCode = 'EPSG:5936';
+      units = 'APSTILE';
+      break;
+    default:
+      projectionCode = 'EPSG:3857';
+      units = 'OSMTILE';
+  }
   
   // Use first style if none selected and styles exist
   const styleName = selectedStyle || (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
@@ -625,6 +822,7 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   const imgFormat = imageFormat || 'image/png';
 
   // Transform bbox if using Web Mercator
+  const useWebMercator = viewerProjection === 'OSMTILE';
   let transformedBbox;
   if (useWebMercator) {
     const minCoords = wgs84ToWebMercator(parseFloat(bbox.minx), parseFloat(bbox.miny));
@@ -650,12 +848,12 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   mapExtent.setAttribute('units', units);
   mapExtent.setAttribute('checked', '');
 
-  // Create inputs for bbox
+  // Create inputs for bbox (omitting min/max attributes for location inputs)
   const inputs = [
-    { name: 'xmin', type: 'location', units: 'pcrs', axis: 'easting', position: 'top-left', min: transformedBbox.minx, max: transformedBbox.maxx },
-    { name: 'ymin', type: 'location', units: 'pcrs', axis: 'northing', position: 'bottom-left', min: transformedBbox.miny, max: transformedBbox.maxy },
-    { name: 'xmax', type: 'location', units: 'pcrs', axis: 'easting', position: 'bottom-right', min: transformedBbox.minx, max: transformedBbox.maxx },
-    { name: 'ymax', type: 'location', units: 'pcrs', axis: 'northing', position: 'top-right', min: transformedBbox.miny, max: transformedBbox.maxy },
+    { name: 'xmin', type: 'location', units: 'pcrs', axis: 'easting', position: 'top-left' },
+    { name: 'ymin', type: 'location', units: 'pcrs', axis: 'northing', position: 'bottom-left' },
+    { name: 'xmax', type: 'location', units: 'pcrs', axis: 'easting', position: 'bottom-right' },
+    { name: 'ymax', type: 'location', units: 'pcrs', axis: 'northing', position: 'top-right' },
     { name: 'w', type: 'width', min: '1', max: '10000' },
     { name: 'h', type: 'height', min: '1', max: '10000' },
     { name: 'i', type: 'location', units: 'map', axis: 'i' },
@@ -710,11 +908,12 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
 
   if (version.startsWith('1.3')) {
     tref += `&CRS=${projectionCode}`;
-    // EPSG:3857 uses x,y order; EPSG:4326 in WMS 1.3.0 uses y,x order
-    if (useWebMercator) {
-      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
-    } else {
+    // WMS 1.3.0 with EPSG:4326 requires latitude,longitude order (ymin,xmin,ymax,xmax)
+    // All other CRS use standard xmin,ymin,xmax,ymax order
+    if (projectionCode === 'EPSG:4326') {
       tref += '&BBOX={ymin},{xmin},{ymax},{xmax}';
+    } else {
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
     }
   } else {
     tref += `&SRS=${projectionCode}`;
@@ -726,7 +925,7 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
 
   // Add query link if query is enabled
   if (queryEnabled && layer.queryable) {
-    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat);
     mapExtent.appendChild(queryLink);
   }
 
@@ -744,26 +943,26 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
     console.log('No license URL for layer:', layer.name);
   }
   
-  // Add legend links for each style (before map-extent)
+  // Add legend links for each style (before map-extent) - only first legend per style
   if (layer.styles && layer.styles.length > 0) {
     layer.styles.forEach(style => {
       if (style.legendURLs && style.legendURLs.length > 0) {
-        style.legendURLs.forEach(legend => {
-          const legendLink = document.createElement('map-link');
-          legendLink.setAttribute('rel', 'legend');
-          legendLink.setAttribute('href', legend.href);
-          if (style.title) {
-            legendLink.setAttribute('title', style.title);
-          }
-          if (legend.width) {
-            legendLink.setAttribute('width', legend.width);
-          }
-          if (legend.height) {
-            legendLink.setAttribute('height', legend.height);
-          }
-          mapLayer.appendChild(legendLink);
-        });
-        console.log('Added', style.legendURLs.length, 'legend link(s) for style:', style.title);
+        // Only add the first legend URL to avoid issues with map-link component
+        const legend = style.legendURLs[0];
+        const legendLink = document.createElement('map-link');
+        legendLink.setAttribute('rel', 'legend');
+        legendLink.setAttribute('href', legend.href);
+        if (style.title) {
+          legendLink.setAttribute('title', style.title);
+        }
+        if (legend.width) {
+          legendLink.setAttribute('width', legend.width);
+        }
+        if (legend.height) {
+          legendLink.setAttribute('height', legend.height);
+        }
+        mapLayer.appendChild(legendLink);
+        console.log('Added legend link for style:', style.title);
       }
     });
   }
@@ -796,10 +995,27 @@ function updateLayerQueryInViewer(index, layerName, queryEnabled, layer, version
     }
     // Add query link with selected format
     const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
-    const useWebMercator = viewerProjection === 'OSMTILE';
-    const projectionCode = useWebMercator ? 'EPSG:3857' : 'EPSG:4326';
     
-    const queryLink = createQueryLink(layer, version, projectionCode, useWebMercator, selectedFormat);
+    // Map projection to CRS code (same logic as addLayerToViewer)
+    let projectionCode;
+    switch (viewerProjection) {
+      case 'OSMTILE':
+        projectionCode = 'EPSG:3857';
+        break;
+      case 'CBMTILE':
+        projectionCode = 'EPSG:3978';
+        break;
+      case 'WGS84':
+        projectionCode = 'EPSG:4326';
+        break;
+      case 'APSTILE':
+        projectionCode = 'EPSG:5936';
+        break;
+      default:
+        projectionCode = 'EPSG:3857';
+    }
+    
+    const queryLink = createQueryLink(layer, version, projectionCode, selectedFormat);
     mapExtent.appendChild(queryLink);
     console.log('Added/updated query support to layer:', layerName, 'with format:', selectedFormat);
   } else if (!queryEnabled && existingQueryLink) {
