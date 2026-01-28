@@ -2,6 +2,19 @@
 
 const CORS_PROXY = 'https://corsproxy.io/?';
 
+// Format dimension name as WMS parameter (time/elevation unchanged, others get DIM_ prefix)
+function formatDimensionParam(dimensionName) {
+  const name = dimensionName.toLowerCase();
+  if (name === 'time' || name === 'elevation') {
+    return dimensionName.toUpperCase();
+  }
+  // Check if DIM_ is already prefixed to avoid double-prefixing
+  if (name.startsWith('dim_')) {
+    return dimensionName.toUpperCase();
+  }
+  return 'DIM_' + dimensionName.toUpperCase();
+}
+
 // Transform WGS84 coordinates to Web Mercator (EPSG:3857)
 function wgs84ToWebMercator(lon, lat) {
   const x = (lon * 20037508.34) / 180;
@@ -398,12 +411,28 @@ function extractServiceInfo(xmlDoc, baseUrl) {
       }
     }
 
+    // Extract projection-specific BoundingBox elements
+    const boundingBoxes = {};
+    const bboxElements = parentLayer.querySelectorAll(':scope > BoundingBox');
+    bboxElements.forEach(bboxEl => {
+      const crs = bboxEl.getAttribute('CRS') || bboxEl.getAttribute('SRS');
+      if (crs) {
+        boundingBoxes[crs] = {
+          minx: bboxEl.getAttribute('minx'),
+          miny: bboxEl.getAttribute('miny'),
+          maxx: bboxEl.getAttribute('maxx'),
+          maxy: bboxEl.getAttribute('maxy')
+        };
+      }
+    });
+
     if (minx && miny && maxx && maxy) {
       layers.push({
         name,
         title: title || name,
         abstract: abstract || '',
         bbox: { minx, miny, maxx, maxy },
+        boundingBoxes,
         queryable,
         styles,
         licenseUrl,
@@ -411,7 +440,7 @@ function extractServiceInfo(xmlDoc, baseUrl) {
         supportedProjections,
         dimensions,
       });
-      console.log('Layer:', name, 'Projections:', supportedProjections.join(', ') || 'none', 'Dimensions:', dimensions.length);
+      console.log('Layer:', name, 'Projections:', supportedProjections.join(', ') || 'none', 'Dimensions:', dimensions.length, 'BoundingBoxes:', Object.keys(boundingBoxes).join(', ') || 'none');
     }
   });
 
@@ -460,6 +489,10 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
           <p>${layer.abstract}</p>
         </details>
         ` : ''}
+        <div class="bounds-selector">
+          <input type="checkbox" id="bounds-${index}" class="bounds-checkbox" title="Include layer bounds (disable if WMS bounds are incorrect)" checked />
+          <label for="bounds-${index}" class="bounds-label">Include Bounds</label>
+        </div>
         ${layer.queryable ? `
         <div class="query-format-selector">
           <input type="checkbox" id="query-${index}" class="query-checkbox" title="Enable GetFeatureInfo queries" />
@@ -540,7 +573,9 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
         const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
         const projectionSelect = document.getElementById(`projection-${index}`);
         const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
-        createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
+        const boundsCheckbox = document.getElementById(`bounds-${index}`);
+        const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+        createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
       } else {
         removeViewerForLayer(index);
       }
@@ -575,6 +610,29 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
       }
     }
 
+    // Add event listener to bounds checkbox
+    const boundsCheckbox = document.getElementById(`bounds-${index}`);
+    if (boundsCheckbox) {
+      boundsCheckbox.addEventListener('change', (e) => {
+        const layerCheckbox = document.getElementById(`layer-${index}`);
+        if (layerCheckbox.checked) {
+          const queryCheckbox = document.getElementById(`query-${index}`);
+          const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+          const formatSelect = document.getElementById(`format-${index}`);
+          const selectedFormat = formatSelect ? formatSelect.value : info.getFeatureInfoFormats[0];
+          const styleSelect = document.getElementById(`style-${index}`);
+          const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
+          const imgFormatSelect = document.getElementById(`img-format-${index}`);
+          const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+          const projectionSelect = document.getElementById(`projection-${index}`);
+          const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+          // Recreate viewer with new bounds setting
+          removeViewerForLayer(index);
+          createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, e.target.checked);
+        }
+      });
+    }
+
     // Add event listener to style selector if available
     if (layer.styles && layer.styles.length > 0) {
       const styleSelect = document.getElementById(`style-${index}`);
@@ -597,9 +655,11 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
             const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
             const projectionSelect = document.getElementById(`projection-${index}`);
             const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            const boundsCheckbox = document.getElementById(`bounds-${index}`);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
             // Recreate viewer with new style
             removeViewerForLayer(index);
-            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, e.target.value, selectedImgFormat, selectedProjection);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, e.target.value, selectedImgFormat, selectedProjection, boundsEnabled);
           }
         });
       }
@@ -620,9 +680,11 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
             const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
             const projectionSelect = document.getElementById(`projection-${index}`);
             const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            const boundsCheckbox = document.getElementById(`bounds-${index}`);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
             // Recreate viewer with new image format
             removeViewerForLayer(index);
-            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, e.target.value, selectedProjection);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, e.target.value, selectedProjection, boundsEnabled);
           }
         });
       }
@@ -643,9 +705,11 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
             const selectedStyle = styleSelect ? styleSelect.value : (layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '');
             const imgFormatSelect = document.getElementById(`img-format-${index}`);
             const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
+            const boundsCheckbox = document.getElementById(`bounds-${index}`);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
             // Recreate viewer with new projection
             removeViewerForLayer(index);
-            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, e.target.value);
+            createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, e.target.value, boundsEnabled);
           }
         });
       }
@@ -671,9 +735,11 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
               const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
               const projectionSelect = document.getElementById(`projection-${index}`);
               const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+              const boundsCheckbox = document.getElementById(`bounds-${index}`);
+              const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
               // Recreate viewer with new dimension value
               removeViewerForLayer(index);
-              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
+              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
             }
           });
         }
@@ -692,9 +758,11 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
               const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (info.getMapFormats && info.getMapFormats.length > 0 ? info.getMapFormats[0] : 'image/png');
               const projectionSelect = document.getElementById(`projection-${index}`);
               const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+              const boundsCheckbox = document.getElementById(`bounds-${index}`);
+              const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
               // Recreate viewer when dimension is enabled/disabled
               removeViewerForLayer(index);
-              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection);
+              createViewerForLayer(index, layer, info.version, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
             }
           });
         }
@@ -762,7 +830,8 @@ function createQueryLink(layer, version, projectionCode, infoFormat, layerIndex,
       const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
       
       if (isDimensionEnabled) {
-        tref += `&${dimension.name}={${dimension.name}}`;
+        const paramName = formatDimensionParam(dimension.name);
+        tref += `&${paramName}={${dimension.name}}`;
       }
     });
   }
@@ -839,7 +908,7 @@ function updateLayerQuery(layerName, queryEnabled, layer, version, selectedForma
   }
 }
 
-function createViewerForLayer(index, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, projection) {
+function createViewerForLayer(index, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, projection, boundsEnabled) {
   const container = document.getElementById(`viewer-container-${index}`);
   if (!container) return;
 
@@ -848,6 +917,9 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
   
   // Default to OSMTILE if no projection specified
   const selectedProjection = projection || 'OSMTILE';
+  
+  // Default to true if not specified
+  const includeBounds = boundsEnabled !== undefined ? boundsEnabled : true;
 
   // Create mapml-viewer element
   const viewer = document.createElement('mapml-viewer');
@@ -872,6 +944,13 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
       baseLayer.setAttribute('label', 'Canada Base Map');
       baseLayer.setAttribute('checked', '');
       baseExtent.setAttribute('units', 'OSMTILE');
+      
+      // Add license link
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://open.canada.ca/en/open-government-licence-canada');
+      licenseLink.setAttribute('title', 'Open Government Licence - Canada');
+      baseExtent.appendChild(licenseLink);
       
       // Add zoom input
       const zoomInput = document.createElement('map-input');
@@ -915,11 +994,17 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
       baseExtent.setAttribute('units', 'CBMTILE');
       baseExtent.setAttribute('label', 'Canada Base Map - Transportation');
       
+      // Add extent bounds
+      const mapMeta = document.createElement('map-meta');
+      mapMeta.setAttribute('name', 'extent');
+      mapMeta.setAttribute('content', 'top-left-easting=-5388605, top-left-northing=7005413, bottom-right-easting=3895643, bottom-right-northing=-4427255');
+      baseExtent.appendChild(mapMeta);
+      
       // Add license link
       const licenseLink = document.createElement('map-link');
       licenseLink.setAttribute('rel', 'license');
-      licenseLink.setAttribute('href', 'https://www.nrcan.gc.ca/earth-sciences/geography/topographic-information/free-data-geogratis/licence/17285');
-      licenseLink.setAttribute('title', 'Canada Base Map © Natural Resources Canada');
+      licenseLink.setAttribute('href', 'https://open.canada.ca/en/open-government-licence-canada');
+      licenseLink.setAttribute('title', 'Open Government Licence - Canada');
       baseExtent.appendChild(licenseLink);
       
       // Add zoom input
@@ -1003,7 +1088,7 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
   }
 
   // Add the layer to this viewer
-  addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat, index);
+  addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imgFormat, index, includeBounds);
 
   // Add to container
   container.appendChild(viewer);
@@ -1020,7 +1105,7 @@ function removeViewerForLayer(index) {
   console.log('Removed viewer for layer index:', index);
 }
 
-function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, layerIndex) {
+function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, layerIndex, boundsEnabled) {
   const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
   const { bbox } = layer;
 
@@ -1053,21 +1138,49 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   
   // Default to image/png if not specified
   const imgFormat = imageFormat || 'image/png';
+  
+  // Default to true if not specified
+  const includeBounds = boundsEnabled !== undefined ? boundsEnabled : true;
 
-  // Transform bbox if using Web Mercator
-  const useWebMercator = viewerProjection === 'OSMTILE';
-  let transformedBbox;
-  if (useWebMercator) {
-    const minCoords = wgs84ToWebMercator(parseFloat(bbox.minx), parseFloat(bbox.miny));
-    const maxCoords = wgs84ToWebMercator(parseFloat(bbox.maxx), parseFloat(bbox.maxy));
-    transformedBbox = {
-      minx: minCoords.x.toString(),
-      miny: minCoords.y.toString(),
-      maxx: maxCoords.x.toString(),
-      maxy: maxCoords.y.toString(),
-    };
-  } else {
-    transformedBbox = bbox;
+  // Determine which bounding box to use based on projection
+  let extentBbox = null;
+  let extentCRS = null;
+  
+  // Check for projection-specific BoundingBox elements
+  if (layer.boundingBoxes) {
+    if (viewerProjection === 'OSMTILE' && (layer.boundingBoxes['EPSG:3857'] || layer.boundingBoxes['MapML:OSMTILE'])) {
+      extentBbox = layer.boundingBoxes['EPSG:3857'] || layer.boundingBoxes['MapML:OSMTILE'];
+      extentCRS = 'EPSG:3857';
+    } else if (viewerProjection === 'CBMTILE' && (layer.boundingBoxes['EPSG:3978'] || layer.boundingBoxes['MapML:CBMTILE'])) {
+      extentBbox = layer.boundingBoxes['EPSG:3978'] || layer.boundingBoxes['MapML:CBMTILE'];
+      extentCRS = 'EPSG:3978';
+    } else if (viewerProjection === 'WGS84' && (layer.boundingBoxes['EPSG:4326'] || layer.boundingBoxes['CRS:84'] || layer.boundingBoxes['MapML:WGS84'])) {
+      extentBbox = layer.boundingBoxes['EPSG:4326'] || layer.boundingBoxes['CRS:84'] || layer.boundingBoxes['MapML:WGS84'];
+      extentCRS = 'EPSG:4326';
+    } else if (viewerProjection === 'APSTILE' && (layer.boundingBoxes['EPSG:5936'] || layer.boundingBoxes['MapML:APSTILE'])) {
+      extentBbox = layer.boundingBoxes['EPSG:5936'] || layer.boundingBoxes['MapML:APSTILE'];
+      extentCRS = 'EPSG:5936';
+    }
+  }
+  
+  // Fall back to transforming EX_GeographicBoundingBox if no projection-specific bbox found
+  if (!extentBbox) {
+    if (viewerProjection === 'OSMTILE') {
+      // Transform WGS84 to Web Mercator
+      const minCoords = wgs84ToWebMercator(parseFloat(bbox.minx), parseFloat(bbox.miny));
+      const maxCoords = wgs84ToWebMercator(parseFloat(bbox.maxx), parseFloat(bbox.maxy));
+      extentBbox = {
+        minx: minCoords.x.toString(),
+        miny: minCoords.y.toString(),
+        maxx: maxCoords.x.toString(),
+        maxy: maxCoords.y.toString(),
+      };
+      extentCRS = 'EPSG:3857';
+    } else {
+      // Use geographic bbox as-is
+      extentBbox = bbox;
+      extentCRS = 'EPSG:4326';
+    }
   }
 
   // Create map-layer element
@@ -1076,11 +1189,24 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
   mapLayer.setAttribute('checked', '');
   mapLayer.setAttribute('data-wms-layer', layer.name);
 
-  // Add map-meta extent using geographic bounding box (WGS84)
-  const mapMeta = document.createElement('map-meta');
-  mapMeta.setAttribute('name', 'extent');
-  mapMeta.setAttribute('content', `top-left-longitude=${bbox.minx}, top-left-latitude=${bbox.maxy}, bottom-right-longitude=${bbox.maxx}, bottom-right-latitude=${bbox.miny}`);
-  mapLayer.appendChild(mapMeta);
+  // Add map-meta extent if enabled
+  if (includeBounds && extentBbox) {
+    const mapMeta = document.createElement('map-meta');
+    mapMeta.setAttribute('name', 'extent');
+    
+    // Use appropriate coordinate names based on CRS
+    let content;
+    if (extentCRS === 'EPSG:4326' || extentCRS === 'CRS:84') {
+      // Geographic coordinates (longitude/latitude)
+      content = `top-left-longitude=${extentBbox.minx}, top-left-latitude=${extentBbox.maxy}, bottom-right-longitude=${extentBbox.maxx}, bottom-right-latitude=${extentBbox.miny}`;
+    } else {
+      // Projected coordinates (easting/northing)
+      content = `top-left-easting=${extentBbox.minx}, top-left-northing=${extentBbox.maxy}, bottom-right-easting=${extentBbox.maxx}, bottom-right-northing=${extentBbox.miny}`;
+    }
+    
+    mapMeta.setAttribute('content', content);
+    mapLayer.appendChild(mapMeta);
+  }
 
   // Add license link if available (before map-extent)
   if (layer.licenseUrl) {
@@ -1232,7 +1358,8 @@ function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, 
       const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
       
       if (isDimensionEnabled) {
-        tref += `&${dimension.name}={${dimension.name}}`;
+        const paramName = formatDimensionParam(dimension.name);
+        tref += `&${paramName}={${dimension.name}}`;
       }
     });
   }

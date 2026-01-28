@@ -190,6 +190,30 @@ button:active {
   cursor: pointer;
 }
 
+.bounds-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  justify-content: flex-start;
+}
+
+.bounds-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  margin: 0;
+}
+
+.bounds-label {
+  font-size: 0.85rem;
+  font-weight: normal;
+  color: #666;
+  cursor: pointer;
+  margin: 0;
+}
+
 .query-format-selector {
   display: flex;
   align-items: center;
