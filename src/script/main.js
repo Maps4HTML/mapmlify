@@ -528,6 +528,8 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
           </select>
         </div>
         ` : ''}
+      </div>
+      <div class="layer-viewer-container" id="viewer-container-${index}">
         <img 
           src="${buildGetMapUrl(info.baseUrl, layer, info.version, usedProxy, layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '')}" 
           alt="Preview of ${layer.title}"
@@ -535,7 +537,6 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
           id="preview-${index}"
         />
       </div>
-      <div class="layer-viewer-container" id="viewer-container-${index}"></div>
     </div>
   `
     )
@@ -912,6 +913,12 @@ function createViewerForLayer(index, layer, version, selectedFormat, queryEnable
   const container = document.getElementById(`viewer-container-${index}`);
   if (!container) return;
 
+  // Hide the thumbnail
+  const thumbnail = document.getElementById(`preview-${index}`);
+  if (thumbnail) {
+    thumbnail.style.display = 'none';
+  }
+
   // Default to image/png if not specified
   const imgFormat = imageFormat || 'image/png';
   
@@ -1100,8 +1107,17 @@ function removeViewerForLayer(index) {
   const container = document.getElementById(`viewer-container-${index}`);
   if (!container) return;
 
-  // Remove the viewer
-  container.innerHTML = '';
+  // Show the thumbnail again
+  const thumbnail = document.getElementById(`preview-${index}`);
+  if (thumbnail) {
+    thumbnail.style.display = 'block';
+  }
+
+  // Remove the viewer (but keep the thumbnail)
+  const viewer = container.querySelector('mapml-viewer');
+  if (viewer) {
+    viewer.remove();
+  }
   console.log('Removed viewer for layer index:', index);
 }
 
