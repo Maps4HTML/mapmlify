@@ -1,5 +1,5 @@
 National Forest Inventory kNN k-Nearest Neighbour, https://nfi.nfis.org/mapserver/cgi-bin/nfis-kNN.cgi?SERVICE=WMS&VERSION=1.3.0&REQUEST=GETCAPABILITIES
-Toporama (1.1.1), https://maps.geogratis.gc.ca/wms/toporama_en?REQUEST=GETCAPABILITIES&VERSION=1.1.1
+Toporama (1.1.1), https://maps.geogratis.gc.ca/wms/toporama_en?REQUEST=GETCAPABILITIES&VERSION=1.1.1&SERVICE=WMS
 Canvec, https://maps.geogratis.gc.ca/wms/canvec_en?version=1.3.0&service=WMS&request=GetCapabilities
 Colour Shaded Relief - Canada, http://maps.geogratis.gc.ca/wms/elevation_en?SERVICE=WMS&VERSION=1.3.0&request=GetCapabilities
 CIOPS West - Sea Water Salinity, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CIOPS-West_SeaWaterSalinity_16m
