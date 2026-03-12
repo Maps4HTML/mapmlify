@@ -63,7 +63,7 @@ section {
   font-size: 1rem;
 }
 
-#load-btn {
+#load-btn, #load-file-btn {
   flex: 0 0 auto;
 }
 
@@ -77,7 +77,7 @@ section {
     max-width: none;
   }
   
-  #load-btn {
+  #load-btn, #load-file-btn {
     width: 100%;
   }
 }

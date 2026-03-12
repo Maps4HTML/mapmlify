@@ -196,6 +196,20 @@ loadBtn.addEventListener('click', async () => {
   }
 });
 
+function detectServiceType(xmlDoc) {
+  const rootElement = xmlDoc.documentElement;
+  const rootName = rootElement.localName || rootElement.nodeName;
+  const namespace = rootElement.namespaceURI || '';
+
+  if (rootName === 'Capabilities' && namespace.includes('wmts')) {
+    return 'WMTS';
+  } else if (rootName === 'WMS_Capabilities' || rootName === 'WMT_MS_Capabilities') {
+    return 'WMS';
+  }
+  
+  return null;
+}
+
 async function loadWMSCapabilities(url) {
   let response;
   let usedProxy = false;
@@ -218,15 +232,187 @@ async function loadWMSCapabilities(url) {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(text, 'text/xml');
 
+  // Detect service type
+  const serviceType = detectServiceType(xmlDoc);
+  console.log('Detected service type:', serviceType);
+
   // Store base URL and proxy flag
   currentWmsBaseUrl = url.split('?')[0];
   currentUsedProxy = usedProxy;
 
-  // Extract basic service information
-  const serviceInfo = extractServiceInfo(xmlDoc, currentWmsBaseUrl);
+  if (serviceType === 'WMTS') {
+    // Extract WMTS service information
+    const serviceInfo = extractWMTSInfo(xmlDoc, currentWmsBaseUrl);
+    // Display WMTS service information
+    displayWMTSInfo(serviceInfo, usedProxy ? 'proxy' : 'direct', url);
+  } else {
+    // Extract WMS service information
+    const serviceInfo = extractServiceInfo(xmlDoc, currentWmsBaseUrl);
+    // Display WMS service information
+    displayServiceInfo(serviceInfo, usedProxy, url);
+  }
+}
 
-  // Display service information
-  displayServiceInfo(serviceInfo, usedProxy, url);
+function parseEPSGFromURN(urnString) {
+  if (!urnString) return null;
+  const match = urnString.match(/EPSG:.*:(\d+)/i) || urnString.match(/epsg[:\/-](\d+)/i);
+  return match ? match[1] : null;
+}
+
+function mapTileMatrixSetToProjection(crsCode) {
+  const epsgMap = {
+    '3857': 'OSMTILE',
+    '3978': 'CBMTILE',
+    '4326': 'WGS84',
+    '5936': 'APSTILE'
+  };
+  return epsgMap[crsCode] || null;
+}
+
+function extractWMTSInfo(xmlDoc, baseUrl) {
+  const owsNS = 'http://www.opengis.net/ows/1.1';
+  
+  function queryOWS(element, tagName) {
+    return element.querySelector(tagName) || element.querySelector(`ows\\:${tagName}`) || element.querySelector(`[localName="${tagName}"]`);
+  }
+  
+  function queryAllOWS(element, tagName) {
+    const direct = Array.from(element.querySelectorAll(tagName));
+    const prefixed = Array.from(element.querySelectorAll(`ows\\:${tagName}`));
+    const localName = Array.from(element.querySelectorAll(`[localName="${tagName}"]`));
+    return [...direct, ...prefixed, ...localName].filter((el, idx, arr) => arr.indexOf(el) === idx);
+  }
+
+  const serviceIdent = queryOWS(xmlDoc, 'ServiceIdentification');
+  const title = queryOWS(serviceIdent, 'Title')?.textContent || 'N/A';
+  const abstract = queryOWS(serviceIdent, 'Abstract')?.textContent || 'N/A';
+  const version = xmlDoc.documentElement.getAttribute('version') || '1.0.0';
+
+  const tileMatrixSets = {};
+  const tmsElements = queryAllOWS(xmlDoc, 'TileMatrixSet');
+  
+  tmsElements.forEach(tmsEl => {
+    const identifier = queryOWS(tmsEl, 'Identifier')?.textContent;
+    const crsURN = queryOWS(tmsEl, 'SupportedCRS')?.textContent;
+    const epsgCode = parseEPSGFromURN(crsURN);
+    const projection = epsgCode ? mapTileMatrixSetToProjection(epsgCode) : null;
+    
+    const tileMatrices = [];
+    const tmElements = queryAllOWS(tmsEl, 'TileMatrix');
+    tmElements.forEach(tm => {
+      tileMatrices.push({
+        identifier: queryOWS(tm, 'Identifier')?.textContent
+      });
+    });
+    
+    tileMatrixSets[identifier] = {
+      identifier,
+      crs: crsURN,
+      epsgCode,
+      projection,
+      supported: !!projection,
+      tileMatrices
+    };
+  });
+
+  const layers = [];
+  const layerElements = queryAllOWS(xmlDoc, 'Layer');
+  
+  layerElements.forEach(layerEl => {
+    const name = queryOWS(layerEl, 'Identifier')?.textContent;
+    const layerTitle = queryOWS(layerEl, 'Title')?.textContent || name;
+    const layerAbstract = queryOWS(layerEl, 'Abstract')?.textContent || '';
+    
+    const wgs84BBox = queryOWS(layerEl, 'WGS84BoundingBox');
+    let minx = '-180', miny = '-90', maxx = '180', maxy = '90';
+    if (wgs84BBox) {
+      const lowerCorner = queryOWS(wgs84BBox, 'LowerCorner')?.textContent.split(' ');
+      const upperCorner = queryOWS(wgs84BBox, 'UpperCorner')?.textContent.split(' ');
+      if (lowerCorner && upperCorner) {
+        minx = lowerCorner[0];
+        miny = lowerCorner[1];
+        maxx = upperCorner[0];
+        maxy = upperCorner[1];
+      }
+    }
+    
+    const styles = [];
+    const styleElements = queryAllOWS(layerEl, 'Style');
+    styleElements.forEach(styleEl => {
+      const styleName = queryOWS(styleEl, 'Identifier')?.textContent;
+      const styleTitle = queryOWS(styleEl, 'Title')?.textContent || styleName;
+      const isDefault = styleEl.getAttribute('isDefault') === 'true';
+      styles.push({ name: styleName, title: styleTitle, isDefault });
+    });
+    if (styles.length === 0) {
+      styles.push({ name: 'default', title: 'Default', isDefault: true });
+    }
+    
+    const formats = [];
+    const formatElements = queryAllOWS(layerEl, 'Format');
+    formatElements.forEach(fmt => formats.push(fmt.textContent));
+    
+    const infoFormats = [];
+    const infoFormatElements = queryAllOWS(layerEl, 'InfoFormat');
+    infoFormatElements.forEach(fmt => infoFormats.push(fmt.textContent));
+    
+    const tmsLinks = [];
+    const tmsLinkElements = queryAllOWS(layerEl, 'TileMatrixSetLink');
+    tmsLinkElements.forEach(link => {
+      const tmsId = queryOWS(link, 'TileMatrixSet')?.textContent;
+      if (tmsId && tileMatrixSets[tmsId]) {
+        tmsLinks.push(tileMatrixSets[tmsId]);
+      }
+    });
+    
+    const supportedProjections = tmsLinks
+      .filter(tms => tms.supported)
+      .map(tms => tms.projection)
+      .filter((proj, idx, arr) => arr.indexOf(proj) === idx);
+    
+    if (supportedProjections.length === 0) {
+      return;
+    }
+    
+    const resourceURLs = {};
+    const resourceElements = queryAllOWS(layerEl, 'ResourceURL');
+    resourceElements.forEach(res => {
+      const resourceType = res.getAttribute('resourceType');
+      const format = res.getAttribute('format');
+      const template = res.getAttribute('template');
+      if (!resourceURLs[resourceType]) {
+        resourceURLs[resourceType] = [];
+      }
+      resourceURLs[resourceType].push({ format, template });
+    });
+    
+    const queryable = infoFormats.length > 0 && resourceURLs['FeatureInfo'] && resourceURLs['FeatureInfo'].length > 0;
+    
+    layers.push({
+      name,
+      title: layerTitle,
+      abstract: layerAbstract,
+      bbox: { minx, miny, maxx, maxy },
+      styles,
+      formats,
+      infoFormats,
+      supportedTileMatrixSets: tmsLinks,
+      supportedProjections,
+      resourceURLs,
+      queryable,
+      licenseUrl: '',
+      licenseTitle: ''
+    });
+  });
+
+  return {
+    title,
+    abstract,
+    version,
+    tileMatrixSets,
+    layers,
+    baseUrl
+  };
 }
 
 function extractServiceInfo(xmlDoc, baseUrl) {
@@ -454,6 +640,212 @@ function extractServiceInfo(xmlDoc, baseUrl) {
     getMapFormats,
     serviceLicenseUrl,
   };
+}
+
+function buildWMTSTileUrl(template, layer, tileMatrixSet, style, format, zoom, row, col) {
+  if (!template) return '';
+  
+  let url = template;
+  url = url.replace(/{TileMatrixSet}/g, tileMatrixSet);
+  url = url.replace(/{TileMatrix}/g, zoom);
+  url = url.replace(/{TileRow}/g, row);
+  url = url.replace(/{TileCol}/g, col);
+  url = url.replace(/{Style}/g, style);
+  url = url.replace(/{style}/g, style);
+  
+  if (layer && layer.name) {
+    url = url.replace(/{Layer}/g, layer.name);
+    url = url.replace(/{layer}/g, layer.name);
+  }
+  
+  return url;
+}
+
+function displayWMTSInfo(info, source, url) {
+  const sourceNote = source === 'file' ? '<p><em>(Loaded from file)</em></p>' : '';
+  const serviceTypeBadge = '<span class="service-type-badge" style="background: #4CAF50; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.9em; margin-left: 10px;">WMTS</span>';
+
+  const layersList = info.layers.map((layer, index) => {
+    const defaultStyle = layer.styles.find(s => s.isDefault) || layer.styles[0] || { name: 'default', title: 'Default' };
+    const firstTMS = layer.supportedTileMatrixSets[0];
+    const tileResources = layer.resourceURLs['tile'] || [];
+    const pngResource = tileResources.find(r => r.format && r.format.includes('png')) || tileResources[0];
+    const tileTemplate = pngResource ? pngResource.template : '';
+    const previewUrl = buildWMTSTileUrl(tileTemplate, layer, firstTMS ? firstTMS.identifier : '', defaultStyle.name, 'image/png', '2', '1', '1');
+    const queryResources = layer.resourceURLs['FeatureInfo'] || [];
+    const hasQuery = layer.queryable && queryResources.length > 0;
+    
+    const projectionOptions = layer.supportedProjections.map(proj => {
+      const selected = proj === 'OSMTILE' ? ' selected' : '';
+      return '<option value="' + proj + '"' + selected + '>' + proj + '</option>';
+    }).join('');
+    
+    const abstractHtml = layer.abstract ? '<details class="layer-abstract"><summary>Abstract</summary><p>' + layer.abstract + '</p></details>' : '';
+    
+    const projectionHtml = layer.supportedProjections.length > 0 ? '<div class="projection-selector"><label for="projection-' + index + '">Projection:</label><select id="projection-' + index + '" class="projection-select">' + projectionOptions + '</select></div>' : '';
+    
+    const queryHtml = hasQuery ? '<div class="query-format-selector"><input type="checkbox" id="query-' + index + '" class="query-checkbox" title="Enable GetFeatureInfo queries" /><label for="query-' + index + '" class="query-label">Query</label><label for="format-' + index + '">Info Format:</label><select id="format-' + index + '" class="format-select">' + layer.infoFormats.map(fmt => '<option value="' + fmt + '">' + fmt + '</option>').join('') + '</select></div>' : '';
+    
+    const styleOptions = layer.styles.map(style => {
+      const selected = style.isDefault ? ' selected' : '';
+      return '<option value="' + style.name + '"' + selected + '>' + style.title + '</option>';
+    }).join('');
+    
+    const styleHtml = layer.styles.length > 1 ? '<div class="style-selector"><label for="style-' + index + '">Style:</label><select id="style-' + index + '" class="style-select">' + styleOptions + '</select></div>' : '';
+    
+    const formatOptions = layer.formats.map(fmt => {
+      const selected = fmt.includes('png') ? ' selected' : '';
+      return '<option value="' + fmt + '"' + selected + '>' + fmt + '</option>';
+    }).join('');
+    
+    const formatHtml = layer.formats.length > 0 ? '<div class="format-selector"><label for="img-format-' + index + '">Image Format:</label><select id="img-format-' + index + '" class="format-select">' + formatOptions + '</select></div>' : '';
+    
+    const previewHtml = previewUrl ? '<img src="' + previewUrl + '" alt="Preview of ' + layer.title + '" class="layer-preview" id="preview-' + index + '" />' : '<p>No preview available</p>';
+    
+    return '<div class="layer-item" data-layer-index="' + index + '" data-service-type="WMTS"><div class="layer-controls"><div class="layer-header"><input type="checkbox" id="layer-' + index + '" class="layer-checkbox" /><label for="layer-' + index + '"><strong>' + layer.title + '</strong></label></div><p class="layer-name">Identifier: ' + layer.name + '</p>' + projectionHtml + abstractHtml + '<div class="bounds-selector"><input type="checkbox" id="bounds-' + index + '" class="bounds-checkbox" title="Include layer bounds" checked /><label for="bounds-' + index + '" class="bounds-label">Include Bounds</label></div>' + queryHtml + styleHtml + formatHtml + '</div><div class="layer-viewer-container" id="viewer-container-' + index + '">' + previewHtml + '</div></div>';
+  }).join('');
+
+  const supportedCount = Object.values(info.tileMatrixSets).filter(tms => tms.supported).length;
+  
+  serviceDetails.innerHTML = sourceNote + '<p><strong>Title:</strong> ' + info.title + ' ' + serviceTypeBadge + '</p><p><strong>Version:</strong> ' + info.version + '</p><p><strong>TileMatrixSets:</strong> ' + Object.keys(info.tileMatrixSets).length + ' (' + supportedCount + ' supported)</p><details class="service-abstract"><summary><strong>Abstract</strong></summary><p>' + info.abstract + '</p></details><h3>Available Layers (' + info.layers.length + ')</h3><div class="layers-list">' + layersList + '</div>';
+
+  serviceInfo.classList.remove('hidden');
+
+  info.layers.forEach((layer, index) => {
+    const checkbox = document.getElementById('layer-' + index);
+    checkbox.addEventListener('change', function(e) {
+      if (e.target.checked) {
+        const queryCheckbox = document.getElementById('query-' + index);
+        const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+        const formatSelect = document.getElementById('format-' + index);
+        const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+        const styleSelect = document.getElementById('style-' + index);
+        const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+        const imgFormatSelect = document.getElementById('img-format-' + index);
+        const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+        const projectionSelect = document.getElementById('projection-' + index);
+        const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+        const boundsCheckbox = document.getElementById('bounds-' + index);
+        const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+        createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
+      } else {
+        removeViewerForLayer(index);
+      }
+    });
+
+    if (layer.queryable) {
+      const queryCheckbox = document.getElementById('query-' + index);
+      if (queryCheckbox) {
+        queryCheckbox.addEventListener('change', function(e) {
+          const layerCheckbox = document.getElementById('layer-' + index);
+          if (layerCheckbox.checked) {
+            const styleSelect = document.getElementById('style-' + index);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+            const imgFormatSelect = document.getElementById('img-format-' + index);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+            const projectionSelect = document.getElementById('projection-' + index);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            const boundsCheckbox = document.getElementById('bounds-' + index);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+            const formatSelect = document.getElementById('format-' + index);
+            const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+            removeViewerForLayer(index);
+            createViewerForWMTSLayer(index, layer, info, selectedFormat, e.target.checked, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
+          }
+        });
+      }
+    }
+
+    const boundsCheckbox = document.getElementById('bounds-' + index);
+    if (boundsCheckbox) {
+      boundsCheckbox.addEventListener('change', function(e) {
+        const layerCheckbox = document.getElementById('layer-' + index);
+        if (layerCheckbox.checked) {
+          const queryCheckbox = document.getElementById('query-' + index);
+          const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+          const formatSelect = document.getElementById('format-' + index);
+          const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+          const styleSelect = document.getElementById('style-' + index);
+          const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+          const imgFormatSelect = document.getElementById('img-format-' + index);
+          const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+          const projectionSelect = document.getElementById('projection-' + index);
+          const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+          removeViewerForLayer(index);
+          createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, e.target.checked);
+        }
+      });
+    }
+
+    if (layer.styles && layer.styles.length > 1) {
+      const styleSelect = document.getElementById('style-' + index);
+      if (styleSelect) {
+        styleSelect.addEventListener('change', function(e) {
+          const layerCheckbox = document.getElementById('layer-' + index);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById('query-' + index);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById('format-' + index);
+            const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+            const imgFormatSelect = document.getElementById('img-format-' + index);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+            const projectionSelect = document.getElementById('projection-' + index);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            const boundsCheckbox = document.getElementById('bounds-' + index);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+            removeViewerForLayer(index);
+            createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, e.target.value, selectedImgFormat, selectedProjection, boundsEnabled);
+          }
+        });
+      }
+    }
+
+    if (layer.formats && layer.formats.length > 0) {
+      const imgFormatSelect = document.getElementById('img-format-' + index);
+      if (imgFormatSelect) {
+        imgFormatSelect.addEventListener('change', function(e) {
+          const layerCheckbox = document.getElementById('layer-' + index);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById('query-' + index);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById('format-' + index);
+            const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+            const styleSelect = document.getElementById('style-' + index);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+            const projectionSelect = document.getElementById('projection-' + index);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            const boundsCheckbox = document.getElementById('bounds-' + index);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+            removeViewerForLayer(index);
+            createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, e.target.value, selectedProjection, boundsEnabled);
+          }
+        });
+      }
+    }
+
+    if (layer.supportedProjections && layer.supportedProjections.length > 0) {
+      const projectionSelect = document.getElementById('projection-' + index);
+      if (projectionSelect) {
+        projectionSelect.addEventListener('change', function(e) {
+          const layerCheckbox = document.getElementById('layer-' + index);
+          if (layerCheckbox.checked) {
+            const queryCheckbox = document.getElementById('query-' + index);
+            const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+            const formatSelect = document.getElementById('format-' + index);
+            const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+            const styleSelect = document.getElementById('style-' + index);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+            const imgFormatSelect = document.getElementById('img-format-' + index);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+            const boundsCheckbox = document.getElementById('bounds-' + index);
+            const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+            removeViewerForLayer(index);
+            createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, e.target.value, boundsEnabled);
+          }
+        });
+      }
+    }
+  });
 }
 
 function displayServiceInfo(info, usedProxy, loadedUrl) {
@@ -1119,6 +1511,330 @@ function removeViewerForLayer(index) {
     viewer.remove();
   }
   console.log('Removed viewer for layer index:', index);
+}
+
+function createViewerForWMTSLayer(index, layer, serviceInfo, selectedFormat, queryEnabled, selectedStyle, imageFormat, projection, boundsEnabled) {
+  const container = document.getElementById('viewer-container-' + index);
+  if (!container) return;
+
+  const thumbnail = document.getElementById('preview-' + index);
+  if (thumbnail) {
+    thumbnail.style.display = 'none';
+  }
+
+  const imgFormat = imageFormat || layer.formats[0] || 'image/png';
+  const selectedProjection = projection || 'OSMTILE';
+  const includeBounds = boundsEnabled !== undefined ? boundsEnabled : true;
+  const styleName = selectedStyle || (layer.styles[0] ? layer.styles[0].name : 'default');
+
+  const tileMatrixSet = layer.supportedTileMatrixSets.find(function(tms) {
+    return tms.projection === selectedProjection;
+  });
+  
+  if (!tileMatrixSet) {
+    console.error('No TileMatrixSet found for projection:', selectedProjection);
+    return;
+  }
+
+  const viewer = document.createElement('mapml-viewer');
+  viewer.setAttribute('projection', selectedProjection);
+  viewer.setAttribute('controls', '');
+  viewer.setAttribute('zoom', '2');
+  
+  const bbox = layer.bbox;
+  const centerLat = (parseFloat(bbox.miny) + parseFloat(bbox.maxy)) / 2;
+  const centerLon = (parseFloat(bbox.minx) + parseFloat(bbox.maxx)) / 2;
+  viewer.setAttribute('lat', centerLat.toString());
+  viewer.setAttribute('lon', centerLon.toString());
+
+  if (selectedProjection !== 'WGS84') {
+    const baseLayer = document.createElement('map-layer');
+    const baseExtent = document.createElement('map-extent');
+    baseExtent.setAttribute('checked', '');
+    
+    if (selectedProjection === 'OSMTILE') {
+      baseLayer.setAttribute('label', 'Canada Base Map');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'OSMTILE');
+      
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://open.canada.ca/en/open-government-licence-canada');
+      licenseLink.setAttribute('title', 'Open Government Licence - Canada');
+      baseExtent.appendChild(licenseLink);
+      
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '15');
+      zoomInput.setAttribute('value', '15');
+      baseExtent.appendChild(zoomInput);
+      
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      const tileLink1 = document.createElement('map-link');
+      tileLink1.setAttribute('rel', 'tile');
+      tileLink1.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_CBCT_GEOM_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink1);
+      
+      const tileLink2 = document.createElement('map-link');
+      tileLink2.setAttribute('rel', 'tile');
+      tileLink2.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_TXT_3857/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink2);
+      
+    } else if (selectedProjection === 'CBMTILE') {
+      baseLayer.setAttribute('label', 'Canada Base Map - Transportation');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'CBMTILE');
+      baseExtent.setAttribute('label', 'Canada Base Map - Transportation');
+      
+      const mapMeta = document.createElement('map-meta');
+      mapMeta.setAttribute('name', 'extent');
+      mapMeta.setAttribute('content', 'top-left-easting=-5388605, top-left-northing=7005413, bottom-right-easting=3895643, bottom-right-northing=-4427255');
+      baseExtent.appendChild(mapMeta);
+      
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://open.canada.ca/en/open-government-licence-canada');
+      licenseLink.setAttribute('title', 'Open Government Licence - Canada');
+      baseExtent.appendChild(licenseLink);
+      
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('value', '17');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '17');
+      baseExtent.appendChild(zoomInput);
+      
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      const tileLink = document.createElement('map-link');
+      tileLink.setAttribute('rel', 'tile');
+      tileLink.setAttribute('tref', 'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT3978/MapServer/tile/{z}/{y}/{x}?m4h=t');
+      baseExtent.appendChild(tileLink);
+      
+    } else if (selectedProjection === 'APSTILE') {
+      baseLayer.setAttribute('label', 'Arctic Ocean Basemap MapML Service');
+      baseLayer.setAttribute('checked', '');
+      baseExtent.setAttribute('units', 'APSTILE');
+      baseExtent.setAttribute('label', 'Arctic Ocean Basemap MapML Service');
+      
+      const licenseLink = document.createElement('map-link');
+      licenseLink.setAttribute('rel', 'license');
+      licenseLink.setAttribute('href', 'https://www.esri.com/legal/software-license');
+      licenseLink.setAttribute('title', 'Sources: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors');
+      baseExtent.appendChild(licenseLink);
+      
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('value', '10');
+      zoomInput.setAttribute('min', '0');
+      zoomInput.setAttribute('max', '10');
+      baseExtent.appendChild(zoomInput);
+      
+      const yInput = document.createElement('map-input');
+      yInput.setAttribute('name', 'y');
+      yInput.setAttribute('type', 'location');
+      yInput.setAttribute('units', 'tilematrix');
+      yInput.setAttribute('axis', 'row');
+      baseExtent.appendChild(yInput);
+      
+      const xInput = document.createElement('map-input');
+      xInput.setAttribute('name', 'x');
+      xInput.setAttribute('type', 'location');
+      xInput.setAttribute('units', 'tilematrix');
+      xInput.setAttribute('axis', 'column');
+      baseExtent.appendChild(xInput);
+      
+      const tileLink = document.createElement('map-link');
+      tileLink.setAttribute('rel', 'tile');
+      tileLink.setAttribute('tref', 'https://server.arcgisonline.com/arcgis/rest/services/Polar/Arctic_Ocean_Base/MapServer/tile/{z}/{y}/{x}');
+      baseExtent.appendChild(tileLink);
+    }
+    
+    baseLayer.appendChild(baseExtent);
+    viewer.appendChild(baseLayer);
+  }
+
+  addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, styleName, imgFormat, includeBounds);
+
+  container.appendChild(viewer);
+  
+  console.log('Created WMTS viewer for layer:', layer.name);
+}
+
+function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, selectedStyle, imageFormat, boundsEnabled) {
+  const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+  const bbox = layer.bbox;
+
+  const imgFormat = imageFormat || layer.formats[0] || 'image/png';
+  const styleName = selectedStyle || (layer.styles[0] ? layer.styles[0].name : 'default');
+  const includeBounds = boundsEnabled !== undefined ? boundsEnabled : true;
+
+  const mapLayer = document.createElement('map-layer');
+  mapLayer.setAttribute('label', layer.title);
+  mapLayer.setAttribute('checked', '');
+  mapLayer.setAttribute('data-wmts-layer', layer.name);
+  mapLayer.setAttribute('data-service-type', 'WMTS');
+
+  if (includeBounds && bbox) {
+    const mapMeta = document.createElement('map-meta');
+    mapMeta.setAttribute('name', 'extent');
+    const content = 'top-left-longitude=' + bbox.minx + ', top-left-latitude=' + bbox.maxy + ', bottom-right-longitude=' + bbox.maxx + ', bottom-right-latitude=' + bbox.miny;
+    mapMeta.setAttribute('content', content);
+    mapLayer.appendChild(mapMeta);
+  }
+
+  if (layer.licenseUrl) {
+    const licenseLink = document.createElement('map-link');
+    licenseLink.setAttribute('rel', 'license');
+    licenseLink.setAttribute('href', layer.licenseUrl);
+    if (layer.licenseTitle) {
+      licenseLink.setAttribute('title', layer.licenseTitle + ' for ' + layer.title);
+    }
+    mapLayer.appendChild(licenseLink);
+  }
+
+  const mapExtent = document.createElement('map-extent');
+  mapExtent.setAttribute('units', viewerProjection);
+  mapExtent.setAttribute('checked', '');
+
+  const minZoom = tileMatrixSet.tileMatrices.length > 0 ? tileMatrixSet.tileMatrices[0].identifier : '0';
+  const maxZoom = tileMatrixSet.tileMatrices.length > 0 ? tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1].identifier : '18';
+
+  const zoomInput = document.createElement('map-input');
+  zoomInput.setAttribute('name', 'z');
+  zoomInput.setAttribute('type', 'zoom');
+  zoomInput.setAttribute('min', minZoom);
+  zoomInput.setAttribute('max', maxZoom);
+  mapExtent.appendChild(zoomInput);
+
+  const xInput = document.createElement('map-input');
+  xInput.setAttribute('name', 'x');
+  xInput.setAttribute('type', 'location');
+  xInput.setAttribute('units', 'tilematrix');
+  xInput.setAttribute('axis', 'column');
+  mapExtent.appendChild(xInput);
+
+  const yInput = document.createElement('map-input');
+  yInput.setAttribute('name', 'y');
+  yInput.setAttribute('type', 'location');
+  yInput.setAttribute('units', 'tilematrix');
+  yInput.setAttribute('axis', 'row');
+  mapExtent.appendChild(yInput);
+
+  if (queryEnabled && layer.queryable) {
+    const iInput = document.createElement('map-input');
+    iInput.setAttribute('name', 'i');
+    iInput.setAttribute('type', 'location');
+    iInput.setAttribute('units', 'tile');
+    iInput.setAttribute('axis', 'i');
+    mapExtent.appendChild(iInput);
+
+    const jInput = document.createElement('map-input');
+    jInput.setAttribute('name', 'j');
+    jInput.setAttribute('type', 'location');
+    jInput.setAttribute('units', 'tile');
+    jInput.setAttribute('axis', 'j');
+    mapExtent.appendChild(jInput);
+  }
+
+  if (layer.styles && layer.styles.length > 1) {
+    const mapSelect = document.createElement('map-select');
+    mapSelect.setAttribute('id', 'style-selector');
+    mapSelect.setAttribute('name', 'style');
+    
+    layer.styles.forEach(function(style) {
+      const mapOption = document.createElement('map-option');
+      mapOption.setAttribute('value', style.name);
+      mapOption.textContent = style.title;
+      
+      if (style.name === styleName) {
+        mapOption.setAttribute('selected', '');
+      }
+      
+      mapSelect.appendChild(mapOption);
+    });
+    
+    mapExtent.appendChild(mapSelect);
+  }
+
+  const tileResources = layer.resourceURLs['tile'] || [];
+  let tileResource = tileResources.find(function(r) { return r.format === imgFormat; }) || tileResources[0];
+  
+  if (tileResource) {
+    const mapLink = document.createElement('map-link');
+    mapLink.setAttribute('rel', 'tile');
+    
+    let tref = tileResource.template;
+    tref = tref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
+    tref = tref.replace(/{TileMatrix}/g, '{z}');
+    tref = tref.replace(/{TileRow}/g, '{y}');
+    tref = tref.replace(/{TileCol}/g, '{x}');
+    tref = tref.replace(/{Style}/g, styleName);
+    tref = tref.replace(/{style}/g, styleName);
+    
+    mapLink.setAttribute('tref', tref);
+    mapExtent.appendChild(mapLink);
+  }
+
+  if (queryEnabled && layer.queryable) {
+    const queryResources = layer.resourceURLs['FeatureInfo'] || [];
+    const queryResource = queryResources.find(function(r) { return r.format === selectedFormat; }) || queryResources[0];
+    
+    if (queryResource) {
+      const queryLink = document.createElement('map-link');
+      queryLink.setAttribute('rel', 'query');
+      queryLink.setAttribute('data-query-link', 'true');
+      
+      let qtref = queryResource.template;
+      qtref = qtref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
+      qtref = qtref.replace(/{TileMatrix}/g, '{z}');
+      qtref = qtref.replace(/{TileRow}/g, '{y}');
+      qtref = qtref.replace(/{TileCol}/g, '{x}');
+      qtref = qtref.replace(/{Style}/g, styleName);
+      qtref = qtref.replace(/{style}/g, styleName);
+      qtref = qtref.replace(/{I}/g, '{i}');
+      qtref = qtref.replace(/{J}/g, '{j}');
+      qtref = qtref.replace(/{InfoFormat}/g, selectedFormat);
+      qtref = qtref.replace(/{infoformat}/g, selectedFormat);
+      
+      queryLink.setAttribute('tref', qtref);
+      mapExtent.appendChild(queryLink);
+    }
+  }
+
+  mapLayer.appendChild(mapExtent);
+  viewer.appendChild(mapLayer);
+
+  console.log('Added WMTS layer to viewer:', layer.name, 'TileMatrixSet:', tileMatrixSet.identifier);
 }
 
 function addLayerToViewer(viewer, layer, version, selectedFormat, queryEnabled, selectedStyle, imageFormat, layerIndex, boundsEnabled) {
