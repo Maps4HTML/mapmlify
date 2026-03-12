@@ -1,6 +1,4 @@
-// Main application logic
-
-const CORS_PROXY = 'https://corsproxy.io/?';
+// Main application logic (CORS proxy removed - now using file upload for blocked resources)
 
 // Format dimension name as WMS parameter (time/elevation unchanged, others get DIM_ prefix)
 function formatDimensionParam(dimensionName) {
@@ -127,11 +125,12 @@ function parseISO8601Interval(intervalString) {
 
 const wmsUrlInput = document.getElementById('wms-url');
 const loadBtn = document.getElementById('load-btn');
+const loadFileBtn = document.getElementById('load-file-btn');
+const fileInput = document.getElementById('file-input');
 const serviceInfo = document.getElementById('service-info');
 const serviceDetails = document.getElementById('service-details');
 
 let currentWmsBaseUrl = '';
-let currentUsedProxy = false;
 
 // Load capabilities URLs from file on page load
 async function loadCapabilitiesPresets() {
@@ -182,6 +181,8 @@ loadBtn.addEventListener('click', async () => {
   try {
     loadBtn.disabled = true;
     loadBtn.textContent = 'Loading...';
+    // Hide file upload button in case it was shown from a previous attempt
+    loadFileBtn.style.display = 'none';
 
     await loadWMSCapabilities(url);
     
@@ -189,10 +190,45 @@ loadBtn.addEventListener('click', async () => {
     wmsUrlInput.value = '';
   } catch (error) {
     console.error('Error loading WMS capabilities:', error);
-    alert('Failed to load WMS capabilities. Check console for details.');
+    
+    // Check if it's a CORS error (typical fetch failures are TypeError)
+    if (error.name === 'TypeError' && error.message.includes('fetch')) {
+      alert('Failed to load WMS capabilities due to CORS restrictions.\n\nPlease download the capabilities file in another tab and use "Load from File" button.');
+      loadFileBtn.style.display = 'inline-block';
+    } else {
+      alert('Failed to load WMS capabilities. Check console for details.');
+    }
   } finally {
     loadBtn.disabled = false;
     loadBtn.textContent = 'Load Service';
+  }
+});
+
+loadFileBtn.addEventListener('click', () => {
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  try {
+    loadFileBtn.disabled = true;
+    loadFileBtn.textContent = 'Processing...';
+
+    const text = await file.text();
+    await processCapabilitiesXML(text, 'file');
+    
+    // Clear file input and hide button after successful load
+    fileInput.value = '';
+    loadFileBtn.style.display = 'none';
+    wmsUrlInput.value = '';
+  } catch (error) {
+    console.error('Error processing capabilities file:', error);
+    alert('Failed to process capabilities file. Check console for details.');
+  } finally {
+    loadFileBtn.disabled = false;
+    loadFileBtn.textContent = 'Load from File';
   }
 });
 
@@ -211,45 +247,52 @@ function detectServiceType(xmlDoc) {
 }
 
 async function loadWMSCapabilities(url) {
-  let response;
-  let usedProxy = false;
-
-  try {
-    // Try direct fetch first
-    response = await fetch(url);
-  } catch (error) {
-    // If direct fetch fails (likely CORS), try with proxy
-    const proxyUrl = CORS_PROXY + encodeURIComponent(url);
-    console.log('Direct fetch failed, trying CORS proxy...');
-    console.log('Proxy URL:', proxyUrl);
-    usedProxy = true;
-    response = await fetch(proxyUrl);
-  }
-
+  // Try direct fetch only - no CORS proxy
+  const response = await fetch(url);
   const text = await response.text();
+  
+  await processCapabilitiesXML(text, url);
+}
 
+async function processCapabilitiesXML(xmlText, source) {
   // Parse XML
   const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(text, 'text/xml');
+  const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+
+  // Check for parsing errors
+  const parseError = xmlDoc.querySelector('parsererror');
+  if (parseError) {
+    throw new Error('XML parsing error: ' + parseError.textContent);
+  }
 
   // Detect service type
   const serviceType = detectServiceType(xmlDoc);
   console.log('Detected service type:', serviceType);
 
-  // Store base URL and proxy flag
-  currentWmsBaseUrl = url.split('?')[0];
-  currentUsedProxy = usedProxy;
+  // Store base URL (extract from URL if it's a URL, otherwise use empty string for file uploads)
+  if (source !== 'file' && typeof source === 'string') {
+    currentWmsBaseUrl = source.split('?')[0];
+  } else {
+    // For file uploads, try to extract from XML or use empty string
+    const onlineResource = xmlDoc.querySelector('Capability Request GetMap DCPType HTTP Get OnlineResource');
+    if (onlineResource) {
+      const href = onlineResource.getAttribute('xlink:href') || onlineResource.getAttribute('href');
+      if (href) {
+        currentWmsBaseUrl = href.split('?')[0];
+      }
+    }
+  }
 
   if (serviceType === 'WMTS') {
     // Extract WMTS service information
     const serviceInfo = extractWMTSInfo(xmlDoc, currentWmsBaseUrl);
     // Display WMTS service information
-    displayWMTSInfo(serviceInfo, usedProxy ? 'proxy' : 'direct', url);
+    displayWMTSInfo(serviceInfo, source === 'file' ? 'file' : 'direct', source === 'file' ? 'file' : source);
   } else {
     // Extract WMS service information
     const serviceInfo = extractServiceInfo(xmlDoc, currentWmsBaseUrl);
     // Display WMS service information
-    displayServiceInfo(serviceInfo, usedProxy, url);
+    displayServiceInfo(serviceInfo, source === 'file' ? 'file' : 'direct', source === 'file' ? 'file' : source);
   }
 }
 
@@ -848,9 +891,9 @@ function displayWMTSInfo(info, source, url) {
   });
 }
 
-function displayServiceInfo(info, usedProxy, loadedUrl) {
-  const proxyNote = usedProxy
-    ? '<p><em>(Loaded via CORS proxy)</em></p>'
+function displayServiceInfo(info, source, loadedUrl) {
+  const sourceNote = source === 'file'
+    ? '<p><em>(Loaded from file)</em></p>'
     : '';
 
   const formatOptions = info.getFeatureInfoFormats.map(fmt => 
@@ -923,7 +966,7 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
       </div>
       <div class="layer-viewer-container" id="viewer-container-${index}">
         <img 
-          src="${buildGetMapUrl(info.baseUrl, layer, info.version, usedProxy, layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '')}" 
+          src="${buildGetMapUrl(info.baseUrl, layer, info.version, layer.styles && layer.styles.length > 0 ? layer.styles[0].name : '')}" 
           alt="Preview of ${layer.title}"
           class="layer-preview"
           id="preview-${index}"
@@ -935,14 +978,14 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
     .join('');
 
   serviceDetails.innerHTML = `
+    ${sourceNote}
     <p><strong>Title:</strong> ${info.title}</p>
     <p><strong>Version:</strong> ${info.version}</p>
     <details class="service-abstract">
       <summary><strong>Abstract</strong></summary>
       <p>${info.abstract}</p>
     </details>
-    <p><strong>Loaded URL:</strong> <a href="${loadedUrl}" target="_blank" rel="noopener noreferrer">${loadedUrl}</a></p>
-    ${proxyNote}
+    ${source !== 'file' ? `<p><strong>Loaded URL:</strong> <a href="${loadedUrl}" target="_blank" rel="noopener noreferrer">${loadedUrl}</a></p>` : ''}
     <h3>Available Layers</h3>
     <div class="layers-list">
       ${layersList}
@@ -1034,7 +1077,7 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
           // Update thumbnail
           const preview = document.getElementById(`preview-${index}`);
           if (preview) {
-            preview.src = buildGetMapUrl(info.baseUrl, layer, info.version, usedProxy, e.target.value);
+            preview.src = buildGetMapUrl(info.baseUrl, layer, info.version, e.target.value);
           }
           
           // Update viewer if it's checked
@@ -1164,7 +1207,7 @@ function displayServiceInfo(info, usedProxy, loadedUrl) {
   });
 }
 
-function buildGetMapUrl(baseUrl, layer, version, usedProxy, styleName) {
+function buildGetMapUrl(baseUrl, layer, version, styleName) {
   const { bbox } = layer;
   const params = new URLSearchParams({
     SERVICE: 'WMS',
