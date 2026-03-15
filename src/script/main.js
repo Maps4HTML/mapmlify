@@ -302,13 +302,22 @@ function parseEPSGFromURN(urnString) {
   return match ? match[1] : null;
 }
 
-function mapTileMatrixSetToProjection(crsCode) {
+function mapTileMatrixSetToProjection(crsCode, firstTileMatrix = null) {
   const epsgMap = {
     '3857': 'OSMTILE',
+    '900913': 'OSMTILE', // Old "Google" code for Web Mercator
     '3978': 'CBMTILE',
-    '4326': 'WGS84',
     '5936': 'APSTILE'
   };
+  
+  // EPSG:4326 requires validation - must have 2x1 tiles at zoom 0 to be WGS84
+  if (crsCode === '4326' && firstTileMatrix) {
+    if (firstTileMatrix.matrixWidth === 2 && firstTileMatrix.matrixHeight === 1) {
+      return 'WGS84';
+    }
+    return null; // EPSG:4326 but not WGS84-compliant tiling scheme
+  }
+  
   return epsgMap[crsCode] || null;
 }
 
@@ -336,17 +345,27 @@ function extractWMTSInfo(xmlDoc, baseUrl) {
   
   tmsElements.forEach(tmsEl => {
     const identifier = queryOWS(tmsEl, 'Identifier')?.textContent;
+    // Skip TileMatrixSet elements without an Identifier (these are references, not definitions)
+    if (!identifier) return;
+    
     const crsURN = queryOWS(tmsEl, 'SupportedCRS')?.textContent;
     const epsgCode = parseEPSGFromURN(crsURN);
-    const projection = epsgCode ? mapTileMatrixSetToProjection(epsgCode) : null;
     
     const tileMatrices = [];
     const tmElements = queryAllOWS(tmsEl, 'TileMatrix');
     tmElements.forEach(tm => {
+      const matrixWidth = parseInt(queryOWS(tm, 'MatrixWidth')?.textContent);
+      const matrixHeight = parseInt(queryOWS(tm, 'MatrixHeight')?.textContent);
       tileMatrices.push({
-        identifier: queryOWS(tm, 'Identifier')?.textContent
+        identifier: queryOWS(tm, 'Identifier')?.textContent,
+        matrixWidth: matrixWidth || null,
+        matrixHeight: matrixHeight || null
       });
     });
+    
+    // Pass first TileMatrix for validation (especially for EPSG:4326)
+    const firstTileMatrix = tileMatrices.length > 0 ? tileMatrices[0] : null;
+    const projection = epsgCode ? mapTileMatrixSetToProjection(epsgCode, firstTileMatrix) : null;
     
     tileMatrixSets[identifier] = {
       identifier,
@@ -750,7 +769,9 @@ function displayWMTSInfo(info, source, url) {
 
   const supportedCount = Object.values(info.tileMatrixSets).filter(tms => tms.supported).length;
   
-  serviceDetails.innerHTML = sourceNote + '<p><strong>Title:</strong> ' + info.title + ' ' + serviceTypeBadge + '</p><p><strong>Version:</strong> ' + info.version + '</p><p><strong>TileMatrixSets:</strong> ' + Object.keys(info.tileMatrixSets).length + ' (' + supportedCount + ' supported)</p><details class="service-abstract"><summary><strong>Abstract</strong></summary><p>' + info.abstract + '</p></details><h3>Available Layers (' + info.layers.length + ')</h3><div class="layers-list">' + layersList + '</div>';
+  const urlNote = source !== 'file' ? '<p><strong>Loaded URL:</strong> <a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a></p>' : '';
+  
+  serviceDetails.innerHTML = sourceNote + '<p><strong>Title:</strong> ' + info.title + ' ' + serviceTypeBadge + '</p><p><strong>Version:</strong> ' + info.version + '</p><p><strong>TileMatrixSets:</strong> ' + Object.keys(info.tileMatrixSets).length + ' (' + supportedCount + ' supported)</p><details class="service-abstract"><summary><strong>Abstract</strong></summary><p>' + info.abstract + '</p></details>' + urlNote + '<h3>Available Layers (' + info.layers.length + ')</h3><div class="layers-list">' + layersList + '</div>';
 
   serviceInfo.classList.remove('hidden');
 
@@ -895,6 +916,7 @@ function displayServiceInfo(info, source, loadedUrl) {
   const sourceNote = source === 'file'
     ? '<p><em>(Loaded from file)</em></p>'
     : '';
+  const serviceTypeBadge = '<span class="service-type-badge" style="background: #2196F3; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.9em; margin-left: 10px;">WMS</span>';
 
   const formatOptions = info.getFeatureInfoFormats.map(fmt => 
     `<option value="${fmt}">${fmt}</option>`
@@ -979,7 +1001,7 @@ function displayServiceInfo(info, source, loadedUrl) {
 
   serviceDetails.innerHTML = `
     ${sourceNote}
-    <p><strong>Title:</strong> ${info.title}</p>
+    <p><strong>Title:</strong> ${info.title} ${serviceTypeBadge}</p>
     <p><strong>Version:</strong> ${info.version}</p>
     <details class="service-abstract">
       <summary><strong>Abstract</strong></summary>
@@ -1255,8 +1277,13 @@ function createQueryLink(layer, version, projectionCode, infoFormat, layerIndex,
   tref += `&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
 
   // Add STYLES parameter if a style is selected
+  // Use empty STYLES= for 'default-' prefixed styles to work around GeoServer LayerGroup issues
   if (styleName) {
-    tref += '&STYLES={style}';
+    if (styleName.toLowerCase().startsWith('default-')) {
+      tref += '&STYLES=';
+    } else {
+      tref += '&STYLES={style}';
+    }
   }
 
   // Add dimension parameters to query link only if enabled in UI
@@ -1769,8 +1796,27 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
   mapExtent.setAttribute('units', viewerProjection);
   mapExtent.setAttribute('checked', '');
 
-  const minZoom = tileMatrixSet.tileMatrices.length > 0 ? tileMatrixSet.tileMatrices[0].identifier : '0';
-  const maxZoom = tileMatrixSet.tileMatrices.length > 0 ? tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1].identifier : '18';
+  // Extract zoom levels from TileMatrix identifiers, handling prefixes like "EPSG:900913:0"
+  let minZoom = '0';
+  let maxZoom = '18';
+  
+  if (tileMatrixSet.tileMatrices.length > 0) {
+    const firstId = tileMatrixSet.tileMatrices[0].identifier;
+    const lastId = tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1].identifier;
+    
+    // Try to extract numeric suffix from identifiers like "EPSG:900913:0"
+    const firstMatch = firstId ? firstId.match(/:(\d+)$/) : null;
+    const lastMatch = lastId ? lastId.match(/:(\d+)$/) : null;
+    
+    if (firstMatch && lastMatch) {
+      minZoom = firstMatch[1];
+      maxZoom = lastMatch[1];
+    } else {
+      // Use the identifiers as-is if they're already numeric
+      minZoom = firstId || '0';
+      maxZoom = lastId || '18';
+    }
+  }
 
   const zoomInput = document.createElement('map-input');
   zoomInput.setAttribute('name', 'z');
@@ -1838,7 +1884,25 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
     
     let tref = tileResource.template;
     tref = tref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
-    tref = tref.replace(/{TileMatrix}/g, '{z}');
+    
+    // Handle TileMatrix identifiers that may have a prefix (e.g., "EPSG:900913:0")
+    // Extract prefix if all TileMatrix identifiers follow a "prefix:number" pattern
+    let tileMatrixReplacement = '{z}';
+    if (tileMatrixSet.tileMatrices && tileMatrixSet.tileMatrices.length > 0) {
+      const firstId = tileMatrixSet.tileMatrices[0].identifier;
+      const lastId = tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1].identifier;
+      
+      // Check if identifiers end with numbers and have a common prefix
+      const firstMatch = firstId ? firstId.match(/^(.+):(\d+)$/) : null;
+      const lastMatch = lastId ? lastId.match(/^(.+):(\d+)$/) : null;
+      
+      if (firstMatch && lastMatch && firstMatch[1] === lastMatch[1]) {
+        // All TileMatrix identifiers share the same prefix
+        tileMatrixReplacement = firstMatch[1] + ':{z}';
+      }
+    }
+    
+    tref = tref.replace(/{TileMatrix}/g, tileMatrixReplacement);
     tref = tref.replace(/{TileRow}/g, '{y}');
     tref = tref.replace(/{TileCol}/g, '{x}');
     tref = tref.replace(/{Style}/g, styleName);
@@ -1859,7 +1923,22 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
       
       let qtref = queryResource.template;
       qtref = qtref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
-      qtref = qtref.replace(/{TileMatrix}/g, '{z}');
+      
+      // Handle TileMatrix identifiers that may have a prefix (e.g., "EPSG:900913:0")
+      let tileMatrixReplacement = '{z}';
+      if (tileMatrixSet.tileMatrices && tileMatrixSet.tileMatrices.length > 0) {
+        const firstId = tileMatrixSet.tileMatrices[0].identifier;
+        const lastId = tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1].identifier;
+        
+        const firstMatch = firstId ? firstId.match(/^(.+):(\d+)$/) : null;
+        const lastMatch = lastId ? lastId.match(/^(.+):(\d+)$/) : null;
+        
+        if (firstMatch && lastMatch && firstMatch[1] === lastMatch[1]) {
+          tileMatrixReplacement = firstMatch[1] + ':{z}';
+        }
+      }
+      
+      qtref = qtref.replace(/{TileMatrix}/g, tileMatrixReplacement);
       qtref = qtref.replace(/{TileRow}/g, '{y}');
       qtref = qtref.replace(/{TileCol}/g, '{x}');
       qtref = qtref.replace(/{Style}/g, styleName);
