@@ -404,10 +404,25 @@ function extractWMTSInfo(xmlDoc, baseUrl) {
       const styleName = queryOWS(styleEl, 'Identifier')?.textContent;
       const styleTitle = queryOWS(styleEl, 'Title')?.textContent || styleName;
       const isDefault = styleEl.getAttribute('isDefault') === 'true';
-      styles.push({ name: styleName, title: styleTitle, isDefault });
+      
+      // Extract LegendURL information (WMTS format uses attributes on LegendURL element)
+      const legendURLs = [];
+      const legendElements = styleEl.querySelectorAll('LegendURL');
+      legendElements.forEach(legendEl => {
+        const href = legendEl.getAttribute('xlink:href') || legendEl.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || '';
+        const width = legendEl.getAttribute('width');
+        const height = legendEl.getAttribute('height');
+        const format = legendEl.getAttribute('format');
+        
+        if (href) {
+          legendURLs.push({ width, height, format, href });
+        }
+      });
+      
+      styles.push({ name: styleName, title: styleTitle, isDefault, legendURLs });
     });
     if (styles.length === 0) {
-      styles.push({ name: 'default', title: 'Default', isDefault: true });
+      styles.push({ name: 'default', title: 'Default', isDefault: true, legendURLs: [] });
     }
     
     const formats = [];
@@ -417,6 +432,47 @@ function extractWMTSInfo(xmlDoc, baseUrl) {
     const infoFormats = [];
     const infoFormatElements = queryAllOWS(layerEl, 'InfoFormat');
     infoFormatElements.forEach(fmt => infoFormats.push(fmt.textContent));
+    
+    // Extract dimensions
+    const dimensions = [];
+    const dimensionElements = queryAllOWS(layerEl, 'Dimension');
+    dimensionElements.forEach(dimEl => {
+      const dimName = queryOWS(dimEl, 'Identifier')?.textContent;
+      const dimDefault = queryOWS(dimEl, 'Default')?.textContent;
+      const dimUnits = queryOWS(dimEl, 'UOM')?.textContent;
+      
+      if (dimName) {
+        // Parse all Value elements
+        const valueElements = queryAllOWS(dimEl, 'Value');
+        let allValues = [];
+        
+        valueElements.forEach(valEl => {
+          const valContent = valEl.textContent.trim();
+          if (valContent) {
+            const parsedValues = parseISO8601Interval(valContent);
+            allValues = allValues.concat(parsedValues);
+          }
+        });
+        
+        const valueCount = allValues.length;
+        const usesTemplate = valueCount > 200;
+        
+        // If using template (>200 values), only store default value
+        const values = usesTemplate ? [dimDefault || allValues[0]] : allValues;
+        
+        if (values.length > 0) {
+          dimensions.push({
+            name: dimName,
+            units: dimUnits || '',
+            default: dimDefault || values[0],
+            values: values,
+            valueCount: valueCount,
+            usesTemplate: usesTemplate
+          });
+          console.log('Parsed WMTS dimension:', dimName, 'with', valueCount, 'total values', usesTemplate ? '(using template with default only)' : '(full value list)');
+        }
+      }
+    });
     
     const tmsLinks = [];
     const tmsLinkElements = queryAllOWS(layerEl, 'TileMatrixSetLink');
@@ -463,7 +519,8 @@ function extractWMTSInfo(xmlDoc, baseUrl) {
       resourceURLs,
       queryable,
       licenseUrl: '',
-      licenseTitle: ''
+      licenseTitle: '',
+      dimensions
     });
   });
 
@@ -733,7 +790,15 @@ function displayWMTSInfo(info, source, url) {
     const tileResources = layer.resourceURLs['tile'] || [];
     const pngResource = tileResources.find(r => r.format && r.format.includes('png')) || tileResources[0];
     const tileTemplate = pngResource ? pngResource.template : '';
-    const previewUrl = buildWMTSTileUrl(tileTemplate, layer, firstTMS ? firstTMS.identifier : '', defaultStyle.name, 'image/png', '2', '1', '1');
+    let previewUrl = buildWMTSTileUrl(tileTemplate, layer, firstTMS ? firstTMS.identifier : '', defaultStyle.name, 'image/png', '2', '1', '1');
+    
+    // Replace dimension parameters with default values for preview
+    if (layer.dimensions && layer.dimensions.length > 0) {
+      layer.dimensions.forEach(function(dimension) {
+        const dimPattern = new RegExp('\\{' + dimension.name + '\\}', 'g');
+        previewUrl = previewUrl.replace(dimPattern, dimension.default);
+      });
+    }
     const queryResources = layer.resourceURLs['FeatureInfo'] || [];
     const hasQuery = layer.queryable && queryResources.length > 0;
     
@@ -762,9 +827,19 @@ function displayWMTSInfo(info, source, url) {
     
     const formatHtml = layer.formats.length > 0 ? '<div class="format-selector"><label for="img-format-' + index + '">Image Format:</label><select id="img-format-' + index + '" class="format-select">' + formatOptions + '</select></div>' : '';
     
+    // Add dimension selectors HTML
+    const dimensionHtml = (layer.dimensions && layer.dimensions.length > 0) ? layer.dimensions.map((dim, dimIdx) => {
+      if (dim.usesTemplate) {
+        return '<div class="dimension-info"><strong>' + dim.name + ':</strong> ' + dim.default + ' <em>(fixed value - ' + dim.valueCount + ' total values)</em></div>';
+      } else {
+        const dimOptions = dim.values.map(val => '<option value="' + val + '"' + (val === dim.default ? ' selected' : '') + '>' + val + '</option>').join('');
+        return '<div class="dimension-selector"><input type="checkbox" id="dim-enabled-' + index + '-' + dimIdx + '" class="dimension-checkbox" data-dimension-name="' + dim.name + '" checked /><label for="dim-' + index + '-' + dimIdx + '">' + dim.name + ':</label><select id="dim-' + index + '-' + dimIdx + '" class="dimension-select" data-dimension-name="' + dim.name + '">' + dimOptions + '</select></div>';
+      }
+    }).join('') : '';
+    
     const previewHtml = previewUrl ? '<img src="' + previewUrl + '" alt="Preview of ' + layer.title + '" class="layer-preview" id="preview-' + index + '" />' : '<p>No preview available</p>';
     
-    return '<div class="layer-item" data-layer-index="' + index + '" data-service-type="WMTS"><div class="layer-controls"><div class="layer-header"><input type="checkbox" id="layer-' + index + '" class="layer-checkbox" /><label for="layer-' + index + '"><strong>' + layer.title + '</strong></label></div><p class="layer-name">Identifier: ' + layer.name + '</p>' + projectionHtml + abstractHtml + '<div class="bounds-selector"><input type="checkbox" id="bounds-' + index + '" class="bounds-checkbox" title="Include layer bounds" checked /><label for="bounds-' + index + '" class="bounds-label">Include Bounds</label></div>' + queryHtml + styleHtml + formatHtml + '</div><div class="layer-viewer-container" id="viewer-container-' + index + '">' + previewHtml + '</div></div>';
+    return '<div class="layer-item" data-layer-index="' + index + '" data-service-type="WMTS"><div class="layer-controls"><div class="layer-header"><input type="checkbox" id="layer-' + index + '" class="layer-checkbox" /><label for="layer-' + index + '"><strong>' + layer.title + '</strong></label></div><p class="layer-name">Identifier: ' + layer.name + '</p>' + projectionHtml + abstractHtml + '<div class="bounds-selector"><input type="checkbox" id="bounds-' + index + '" class="bounds-checkbox" title="Include layer bounds" checked /><label for="bounds-' + index + '" class="bounds-label">Include Bounds</label></div>' + queryHtml + styleHtml + formatHtml + dimensionHtml + '</div><div class="layer-viewer-container" id="viewer-container-' + index + '">' + previewHtml + '</div></div>';
   }).join('');
 
   const supportedCount = Object.values(info.tileMatrixSets).filter(tms => tms.supported).length;
@@ -908,6 +983,62 @@ function displayWMTSInfo(info, source, url) {
           }
         });
       }
+    }
+    
+    // Add event listeners to dimension selectors and checkboxes
+    if (layer.dimensions && layer.dimensions.length > 0) {
+      layer.dimensions.forEach((dim, dimIdx) => {
+        if (!dim.usesTemplate) {
+          const dimensionSelect = document.getElementById('dim-' + index + '-' + dimIdx);
+          const dimensionCheckbox = document.getElementById('dim-enabled-' + index + '-' + dimIdx);
+          
+          if (dimensionSelect) {
+            dimensionSelect.addEventListener('change', function(e) {
+              const layerCheckbox = document.getElementById('layer-' + index);
+              if (layerCheckbox.checked) {
+                const queryCheckbox = document.getElementById('query-' + index);
+                const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+                const formatSelect = document.getElementById('format-' + index);
+                const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+                const styleSelect = document.getElementById('style-' + index);
+                const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+                const imgFormatSelect = document.getElementById('img-format-' + index);
+                const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+                const projectionSelect = document.getElementById('projection-' + index);
+                const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+                const boundsCheckbox = document.getElementById('bounds-' + index);
+                const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+                // Recreate viewer with new dimension value
+                removeViewerForLayer(index);
+                createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
+              }
+            });
+          }
+          
+          if (dimensionCheckbox) {
+            dimensionCheckbox.addEventListener('change', function(e) {
+              const layerCheckbox = document.getElementById('layer-' + index);
+              if (layerCheckbox.checked) {
+                const queryCheckbox = document.getElementById('query-' + index);
+                const queryEnabled = queryCheckbox ? queryCheckbox.checked : false;
+                const formatSelect = document.getElementById('format-' + index);
+                const selectedFormat = formatSelect ? formatSelect.value : (layer.infoFormats[0] || 'text/html');
+                const styleSelect = document.getElementById('style-' + index);
+                const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+                const imgFormatSelect = document.getElementById('img-format-' + index);
+                const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+                const projectionSelect = document.getElementById('projection-' + index);
+                const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+                const boundsCheckbox = document.getElementById('bounds-' + index);
+                const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
+                // Recreate viewer when dimension is enabled/disabled
+                removeViewerForLayer(index);
+                createViewerForWMTSLayer(index, layer, info, selectedFormat, queryEnabled, selectedStyle, selectedImgFormat, selectedProjection, boundsEnabled);
+              }
+            });
+          }
+        }
+      });
     }
   });
 }
@@ -1753,14 +1884,14 @@ function createViewerForWMTSLayer(index, layer, serviceInfo, selectedFormat, que
     viewer.appendChild(baseLayer);
   }
 
-  addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, styleName, imgFormat, includeBounds);
+  addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, styleName, imgFormat, includeBounds, index);
 
   container.appendChild(viewer);
   
   console.log('Created WMTS viewer for layer:', layer.name);
 }
 
-function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, selectedStyle, imageFormat, boundsEnabled) {
+function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, selectedStyle, imageFormat, boundsEnabled, layerIndex) {
   const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
   const bbox = layer.bbox;
 
@@ -1790,6 +1921,29 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
       licenseLink.setAttribute('title', layer.licenseTitle + ' for ' + layer.title);
     }
     mapLayer.appendChild(licenseLink);
+  }
+  
+  // Add legend link for the selected style only (before map-extent)
+  if (layer.styles && layer.styles.length > 0 && styleName) {
+    const selectedStyle = layer.styles.find(function(style) { return style.name === styleName; });
+    if (selectedStyle && selectedStyle.legendURLs && selectedStyle.legendURLs.length > 0) {
+      // Only add the first legend URL for the selected style
+      const legend = selectedStyle.legendURLs[0];
+      const legendLink = document.createElement('map-link');
+      legendLink.setAttribute('rel', 'legend');
+      legendLink.setAttribute('href', legend.href);
+      if (selectedStyle.title) {
+        legendLink.setAttribute('title', selectedStyle.title);
+      }
+      if (legend.width) {
+        legendLink.setAttribute('width', legend.width);
+      }
+      if (legend.height) {
+        legendLink.setAttribute('height', legend.height);
+      }
+      mapLayer.appendChild(legendLink);
+      console.log('Added WMTS legend link for selected style:', selectedStyle.title);
+    }
   }
 
   const mapExtent = document.createElement('map-extent');
@@ -1874,6 +2028,46 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
     
     mapExtent.appendChild(mapSelect);
   }
+  
+  // Add dimension selectors if dimensions are available and not using template
+  if (layer.dimensions && layer.dimensions.length > 0) {
+    layer.dimensions.forEach(function(dimension, dimIdx) {
+      if (!dimension.usesTemplate) {
+        // Check if this dimension is enabled in the UI
+        const dimensionCheckbox = layerIndex !== undefined ? document.getElementById('dim-enabled-' + layerIndex + '-' + dimIdx) : null;
+        const isDimensionEnabled = !dimensionCheckbox || dimensionCheckbox.checked;
+        
+        if (!isDimensionEnabled) {
+          console.log('Skipping disabled WMTS dimension:', dimension.name);
+          return;
+        }
+        
+        // Get the selected value from the UI dropdown
+        const dimensionSelect = layerIndex !== undefined ? document.getElementById('dim-' + layerIndex + '-' + dimIdx) : null;
+        const selectedValue = dimensionSelect ? dimensionSelect.value : dimension.default;
+        
+        const mapSelect = document.createElement('map-select');
+        mapSelect.setAttribute('id', dimension.name + '-selector');
+        mapSelect.setAttribute('name', dimension.name);
+        
+        dimension.values.forEach(function(value) {
+          const mapOption = document.createElement('map-option');
+          mapOption.setAttribute('value', value);
+          mapOption.textContent = value;
+          
+          // Mark the selected value from UI
+          if (value === selectedValue) {
+            mapOption.setAttribute('selected', '');
+          }
+          
+          mapSelect.appendChild(mapOption);
+        });
+        
+        mapExtent.appendChild(mapSelect);
+        console.log('Added WMTS dimension selector for:', dimension.name, 'with', dimension.values.length, 'options');
+      }
+    });
+  }
 
   const tileResources = layer.resourceURLs['tile'] || [];
   let tileResource = tileResources.find(function(r) { return r.format === imgFormat; }) || tileResources[0];
@@ -1907,6 +2101,21 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
     tref = tref.replace(/{TileCol}/g, '{x}');
     tref = tref.replace(/{Style}/g, styleName);
     tref = tref.replace(/{style}/g, styleName);
+    
+    // Handle dimension parameters in template URL
+    if (layer.dimensions && layer.dimensions.length > 0) {
+      layer.dimensions.forEach(function(dimension) {
+        const dimPattern = new RegExp('\\{' + dimension.name + '\\}', 'g');
+        if (dimension.usesTemplate) {
+          // Replace with literal default value for >200 value dimensions
+          tref = tref.replace(dimPattern, dimension.default);
+          console.log('Replaced WMTS dimension', dimension.name, 'with default value:', dimension.default);
+        } else {
+          // Keep as template variable for MapML substitution
+          tref = tref.replace(dimPattern, '{' + dimension.name + '}');
+        }
+      });
+    }
     
     mapLink.setAttribute('tref', tref);
     mapExtent.appendChild(mapLink);
@@ -1947,6 +2156,20 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
       qtref = qtref.replace(/{J}/g, '{j}');
       qtref = qtref.replace(/{InfoFormat}/g, selectedFormat);
       qtref = qtref.replace(/{infoformat}/g, selectedFormat);
+      
+      // Handle dimension parameters in query template URL
+      if (layer.dimensions && layer.dimensions.length > 0) {
+        layer.dimensions.forEach(function(dimension) {
+          const dimPattern = new RegExp('\\{' + dimension.name + '\\}', 'g');
+          if (dimension.usesTemplate) {
+            // Replace with literal default value for >200 value dimensions
+            qtref = qtref.replace(dimPattern, dimension.default);
+          } else {
+            // Keep as template variable for MapML substitution
+            qtref = qtref.replace(dimPattern, '{' + dimension.name + '}');
+          }
+        });
+      }
       
       queryLink.setAttribute('tref', qtref);
       mapExtent.appendChild(queryLink);
