@@ -3080,14 +3080,14 @@ function createViewerForWMTSLayer(index, layer, serviceInfo, selectedFormat, que
     viewer.appendChild(baseLayer);
   }
 
-  addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, styleName, imgFormat, includeBounds, index);
+  addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, styleName, imgFormat, includeBounds, index, serviceInfo);
 
   container.appendChild(viewer);
   
   console.log('Created WMTS viewer for layer:', layer.name);
 }
 
-function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, selectedStyle, imageFormat, boundsEnabled, layerIndex) {
+function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, queryEnabled, selectedStyle, imageFormat, boundsEnabled, layerIndex, serviceInfo) {
   const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
   const bbox = layer.bbox;
 
@@ -3109,13 +3109,26 @@ function addWMTSLayerToViewer(viewer, layer, tileMatrixSet, selectedFormat, quer
     mapLayer.appendChild(mapMeta);
   }
 
+  // Add license link - use layer license if available, otherwise fall back to capabilities document
+  const licenseLink = document.createElement('map-link');
+  licenseLink.setAttribute('rel', 'license');
+  
   if (layer.licenseUrl) {
-    const licenseLink = document.createElement('map-link');
-    licenseLink.setAttribute('rel', 'license');
     licenseLink.setAttribute('href', layer.licenseUrl);
     if (layer.licenseTitle) {
       licenseLink.setAttribute('title', layer.licenseTitle + ' for ' + layer.title);
     }
+  } else if (serviceInfo && serviceInfo.baseUrl) {
+    // Fallback to capabilities document - construct proper GetCapabilities URL
+    const capabilitiesUrl = serviceInfo.baseUrl + '?SERVICE=WMTS&REQUEST=GetCapabilities';
+    licenseLink.setAttribute('href', capabilitiesUrl);
+    if (serviceInfo.title) {
+      licenseLink.setAttribute('title', serviceInfo.title);
+    }
+  }
+  
+  // Only append if we have an href
+  if (licenseLink.getAttribute('href')) {
     mapLayer.appendChild(licenseLink);
   }
   
