@@ -964,6 +964,29 @@ function displayWMTSInfo(info, source, url) {
           }
         });
       }
+
+      // Add event listener to info format dropdown
+      const formatSelect = document.getElementById('format-' + index);
+      if (formatSelect) {
+        formatSelect.addEventListener('change', function(e) {
+          const layerCheckbox = document.getElementById('layer-' + index);
+          const queryCheckbox = document.getElementById('query-' + index);
+          if (layerCheckbox.checked && queryCheckbox.checked) {
+            const styleSelect = document.getElementById('style-' + index);
+            const selectedStyle = styleSelect ? styleSelect.value : (layer.styles[0] ? layer.styles[0].name : 'default');
+            const imgFormatSelect = document.getElementById('img-format-' + index);
+            const selectedImgFormat = imgFormatSelect ? imgFormatSelect.value : (layer.formats[0] || 'image/png');
+            const projectionSelect = document.getElementById('projection-' + index);
+            const selectedProjection = projectionSelect ? projectionSelect.value : 'OSMTILE';
+            
+            // Find the tile matrix set for the selected projection
+            const tileMatrixSet = layer.supportedTileMatrixSets.find(tms => tms.projection === selectedProjection);
+            
+            // Update query link with new format
+            updateWMTSQueryInViewer(index, layer, tileMatrixSet, true, e.target.value, selectedStyle, selectedImgFormat);
+          }
+        });
+      }
     }
 
     const boundsCheckbox = document.getElementById('bounds-' + index);
@@ -1797,6 +1820,11 @@ function displayESRIMapServerInfo(info, source, url) {
           const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
           removeViewerForLayer(index);
           createViewerForESRIMapServerLayer(index, layer, info, queryEnabled, imgFormatSelect.value, exportMode, boundsEnabled);
+          
+          // Also update query if it's enabled
+          if (queryEnabled) {
+            updateESRIMapServerQueryInViewer(index, layer, info, true, imgFormatSelect.value);
+          }
         }
       });
     }
@@ -1951,6 +1979,11 @@ function displayESRIImageServerInfo(info, source, url) {
         const boundsEnabled = boundsCheckbox ? boundsCheckbox.checked : true;
         removeViewerForLayer(0);
         createViewerForESRIImageServerLayer(0, layer, info, queryEnabled, imgFormatSelect.value, boundsEnabled);
+        
+        // Also update query if it's enabled
+        if (queryEnabled) {
+          updateESRIImageServerQueryInViewer(0, layer.name, true, info, imgFormatSelect.value);
+        }
       }
     });
   }
