@@ -144,6 +144,8 @@ button:active {
 .layer-controls {
   flex: 0 0 300px;
   min-width: 300px;
+  max-width: 300px;
+  overflow: hidden;
 }
 
 .layer-viewer-container {
@@ -256,6 +258,11 @@ button:active {
   background-color: white;
   cursor: pointer;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .style-select:focus {
@@ -293,6 +300,11 @@ button:active {
   background-color: white;
   cursor: pointer;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dimension-select:focus {
@@ -307,6 +319,12 @@ button:active {
   font-size: 0.85rem;
   background-color: white;
   cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .format-select:focus {
@@ -314,10 +332,61 @@ button:active {
   border-color: #3498db;
 }
 
+.projection-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.projection-selector label {
+  color: #666;
+  font-weight: normal;
+  margin: 0;
+}
+
+.projection-select {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  background-color: white;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projection-select:focus {
+  outline: none;
+  border-color: #3498db;
+}
+
+.format-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.format-selector label {
+  color: #666;
+  font-weight: normal;
+  margin: 0;
+}
+
 .layer-name {
   font-size: 0.85rem;
   color: #666;
   margin-bottom: 0.75rem;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
 }
 
 .layer-preview {
