@@ -180,7 +180,7 @@ loadBtn.addEventListener('click', async () => {
   const url = wmsUrlInput.value.trim();
 
   if (!url) {
-    alert('Please enter a WMS capabilities URL');
+    alert('Please enter a capabilities URL');
     return;
   }
 
