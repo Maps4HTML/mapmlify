@@ -73,7 +73,7 @@ section {
   }
   
   #wms-url {
-    width: 90%;
+    width: 100%;
     max-width: none;
   }
   
@@ -120,6 +120,16 @@ button:active {
   margin-top: 1.5rem;
   margin-bottom: 1rem;
   color: #2c3e50;
+}
+
+#service-details p {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+#service-details a {
+  word-break: break-all;
+  overflow-wrap: break-word;
 }
 
 .layers-list {
