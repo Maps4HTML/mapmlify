@@ -1,0 +1,1796 @@
+// <mapmlify-layer> custom element
+// Encapsulates the layer controls, preview, and viewer lifecycle for a single layer.
+// Usage: const el = document.createElement('mapmlify-layer');
+//        el.layerConfig = { serviceType, layer, ... };
+
+import {
+  formatDimensionParam,
+  wgs84ToWebMercator,
+  buildWMTSTileUrl,
+  buildGetMapUrl,
+} from './main.js';
+
+class MapmlifyLayer extends HTMLElement {
+  #config = null;
+
+  // Internal UI state
+  #viewerActive = false;
+  #queryEnabled = false;
+  #boundsEnabled = true;
+  #selectedStyle = '';
+  #selectedImageFormat = '';
+  #selectedProjection = '';
+  #selectedQueryFormat = '';
+  #selectedExportMode = 'individual';
+  #dimensionStates = []; // [{enabled, value}]
+
+  // DOM references (set during render, avoids querySelector overhead)
+  #layerCheckbox = null;
+  #viewerContainer = null;
+  #preview = null;
+
+  set layerConfig(value) {
+    this.#config = value;
+    if (this.isConnected) {
+      this.#initDefaults();
+      this.#render();
+    }
+  }
+  get layerConfig() {
+    return this.#config;
+  }
+
+  connectedCallback() {
+    if (this.#config) {
+      this.#initDefaults();
+      this.#render();
+    }
+  }
+
+  disconnectedCallback() {
+    this.#removeViewer();
+  }
+
+  #initDefaults() {
+    const c = this.#config;
+    const layer = c.layer;
+    const st = c.serviceType;
+
+    // Style default
+    if (st === 'WMS' || st === 'WMTS') {
+      const defaultStyle =
+        layer.styles?.find((s) => s.isDefault) || layer.styles?.[0];
+      this.#selectedStyle = defaultStyle?.name ?? '';
+    }
+
+    // Image format default
+    if (st === 'WMS') {
+      const fmts = c.getMapFormats || [];
+      this.#selectedImageFormat =
+        fmts.find((f) => f.includes('png')) || fmts[0] || 'image/png';
+    } else if (st === 'WMTS') {
+      const fmts = layer.formats || [];
+      this.#selectedImageFormat =
+        fmts.find((f) => f.includes('png')) || fmts[0] || 'image/png';
+    } else if (st === 'ESRI-MapServer') {
+      this.#selectedImageFormat =
+        c.supportedFormats?.find((f) => f === 'png') ||
+        c.supportedFormats?.[0] ||
+        'png';
+    } else if (st === 'ESRI-ImageServer') {
+      this.#selectedImageFormat = c.supportedFormats?.[0] || 'jpgpng';
+    }
+
+    // Projection default
+    if (st === 'WMS' || st === 'WMTS') {
+      const projs = layer.supportedProjections || [];
+      this.#selectedProjection = projs.includes('OSMTILE')
+        ? 'OSMTILE'
+        : projs[0] || 'OSMTILE';
+    } else {
+      this.#selectedProjection = c.projection || 'OSMTILE';
+    }
+
+    // Query format default
+    if (st === 'WMS') {
+      this.#selectedQueryFormat = c.getFeatureInfoFormats?.[0] || 'text/html';
+    } else if (st === 'WMTS') {
+      this.#selectedQueryFormat = layer.infoFormats?.[0] || 'text/html';
+    }
+
+    // Dimension defaults
+    const dims = layer.dimensions || [];
+    this.#dimensionStates = dims.map((dim) => ({
+      enabled: true,
+      value: dim.default,
+    }));
+
+    this.#boundsEnabled = true;
+    this.#queryEnabled = false;
+    this.#viewerActive = false;
+    this.#selectedExportMode = 'individual';
+  }
+
+  // ─── DOM RENDERING ──────────────────────────────────────
+  #render() {
+    const c = this.#config;
+    if (!c) return;
+
+    const layer = c.layer;
+    const st = c.serviceType;
+
+    // Clear previous content
+    this.innerHTML = '';
+
+    // Set data attributes on the host element
+    this.classList.add('layer-item');
+    this.setAttribute('data-service-type', st);
+
+    // ── Controls panel ──
+    const controls = document.createElement('div');
+    controls.className = 'layer-controls';
+
+    // Header (checkbox + label)
+    const header = document.createElement('div');
+    header.className = 'layer-header';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'layer-checkbox';
+    if (c.disabledCheckbox) {
+      cb.disabled = true;
+      cb.title = 'Tiled services can only display all layers together';
+    }
+    this.#layerCheckbox = cb;
+    const lbl = document.createElement('label');
+    lbl.innerHTML = `<strong>${this.#esc(layer.title)}</strong>`;
+    lbl.addEventListener('click', () => cb.click());
+    header.append(cb, lbl);
+    controls.appendChild(header);
+
+    // Layer name / identifier
+    const nameLine = document.createElement('p');
+    nameLine.className = 'layer-name';
+    if (st === 'ESRI-MapServer') {
+      nameLine.textContent = `ID: ${layer.id} | Name: ${layer.name}`;
+    } else if (st === 'WMTS') {
+      nameLine.textContent = `Identifier: ${layer.name}`;
+    } else {
+      nameLine.textContent = `Name: ${layer.name}`;
+    }
+    controls.appendChild(nameLine);
+
+    // Projection selector (WMS/WMTS with multiple projections, or ESRI read-only)
+    if (
+      (st === 'WMS' || st === 'WMTS') &&
+      layer.supportedProjections?.length > 0
+    ) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Projection:',
+          'projection-select',
+          layer.supportedProjections.map((p) => ({ value: p, label: p })),
+          this.#selectedProjection,
+          (val) => {
+            this.#selectedProjection = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    } else if (st === 'ESRI-MapServer' || st === 'ESRI-ImageServer') {
+      const projDiv = document.createElement('div');
+      projDiv.className = 'projection-selector';
+      projDiv.innerHTML = `<label>Projection:</label><span>${this.#esc(c.projection)} (WKID: ${c.wkid})</span>`;
+      controls.appendChild(projDiv);
+    }
+
+    // Raster properties (ImageServer only)
+    if (st === 'ESRI-ImageServer' && layer.bandCount) {
+      const rp = document.createElement('div');
+      rp.className = 'raster-props';
+      rp.innerHTML = `<p><strong>Bands:</strong> ${layer.bandCount} | <strong>Pixel Type:</strong> ${this.#esc(layer.pixelType)}</p>`;
+      controls.appendChild(rp);
+    }
+
+    // Abstract
+    if (layer.abstract || layer.description) {
+      const details = document.createElement('details');
+      details.className = 'layer-abstract';
+      details.innerHTML = `<summary>Abstract</summary><p>${this.#esc(layer.abstract || layer.description)}</p>`;
+      controls.appendChild(details);
+    }
+
+    // Bounds toggle
+    controls.appendChild(
+      this.#buildCheckbox(
+        'Include Bounds',
+        'bounds-checkbox',
+        'bounds-label',
+        this.#boundsEnabled,
+        'Include layer bounds (disable if bounds are incorrect)',
+        (val) => {
+          this.#boundsEnabled = val;
+          this.#onControlChange();
+        }
+      )
+    );
+
+    // Query toggle
+    const hasQuery = this.#layerIsQueryable();
+    if (hasQuery) {
+      const queryDiv = document.createElement('div');
+      queryDiv.className = 'query-format-selector';
+
+      const qcb = this.#buildCheckbox(
+        'Query',
+        'query-checkbox',
+        'query-label',
+        this.#queryEnabled,
+        'Enable queries',
+        (val) => {
+          this.#queryEnabled = val;
+          this.#onQueryChange();
+        }
+      );
+      // Flatten: append children of the returned wrapper
+      while (qcb.firstChild) queryDiv.appendChild(qcb.firstChild);
+
+      // Info format dropdown (WMS / WMTS)
+      if (st === 'WMS' && c.getFeatureInfoFormats?.length > 0) {
+        const fmtLabel = document.createElement('label');
+        fmtLabel.textContent = 'Info Format:';
+        queryDiv.appendChild(fmtLabel);
+        const sel = this.#createSelectElement(
+          'format-select',
+          c.getFeatureInfoFormats.map((f) => ({ value: f, label: f })),
+          this.#selectedQueryFormat,
+          (val) => {
+            this.#selectedQueryFormat = val;
+            this.#onQueryChange();
+          }
+        );
+        queryDiv.appendChild(sel);
+      } else if (st === 'WMTS' && layer.infoFormats?.length > 0) {
+        const fmtLabel = document.createElement('label');
+        fmtLabel.textContent = 'Info Format:';
+        queryDiv.appendChild(fmtLabel);
+        const sel = this.#createSelectElement(
+          'format-select',
+          layer.infoFormats.map((f) => ({ value: f, label: f })),
+          this.#selectedQueryFormat,
+          (val) => {
+            this.#selectedQueryFormat = val;
+            this.#onQueryChange();
+          }
+        );
+        queryDiv.appendChild(sel);
+      }
+      controls.appendChild(queryDiv);
+    }
+
+    // Style selector
+    if (
+      (st === 'WMS' || st === 'WMTS') &&
+      layer.styles?.length > (st === 'WMTS' ? 1 : 0)
+    ) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Style:',
+          'style-select',
+          layer.styles.map((s) => ({ value: s.name, label: s.title })),
+          this.#selectedStyle,
+          (val) => {
+            this.#selectedStyle = val;
+            this.#updatePreview();
+            this.#onControlChange();
+          }
+        )
+      );
+    }
+
+    // Export mode selector (ESRI MapServer dynamic only)
+    if (st === 'ESRI-MapServer' && !c.isTiled) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Export Mode:',
+          'export-mode-select',
+          [
+            { value: 'individual', label: 'Individual Layer' },
+            { value: 'fused', label: 'All Layers (Fused)' },
+          ],
+          this.#selectedExportMode,
+          (val) => {
+            this.#selectedExportMode = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    }
+
+    // Image format selector
+    if (st === 'WMS' && c.getMapFormats?.length > 0) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Image Format:',
+          'format-select',
+          c.getMapFormats.map((f) => ({ value: f, label: f })),
+          this.#selectedImageFormat,
+          (val) => {
+            this.#selectedImageFormat = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    } else if (st === 'WMTS' && layer.formats?.length > 0) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Image Format:',
+          'format-select',
+          layer.formats.map((f) => ({ value: f, label: f })),
+          this.#selectedImageFormat,
+          (val) => {
+            this.#selectedImageFormat = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    } else if (
+      st === 'ESRI-MapServer' &&
+      !c.isTiled &&
+      c.supportedFormats?.length > 0
+    ) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Image Format:',
+          'format-select',
+          c.supportedFormats.map((f) => ({ value: f, label: f })),
+          this.#selectedImageFormat,
+          (val) => {
+            this.#selectedImageFormat = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    } else if (st === 'ESRI-ImageServer' && c.supportedFormats?.length > 0) {
+      controls.appendChild(
+        this.#buildSelect(
+          'Image Format:',
+          'format-select',
+          c.supportedFormats.map((f) => ({ value: f, label: f })),
+          this.#selectedImageFormat,
+          (val) => {
+            this.#selectedImageFormat = val;
+            this.#onControlChange();
+          }
+        )
+      );
+    }
+
+    // Dimension selectors (WMS / WMTS)
+    const dims = layer.dimensions || [];
+    dims.forEach((dim, dimIdx) => {
+      if (dim.usesTemplate) {
+        // Fixed-value dimension (too many values)
+        const info = document.createElement('div');
+        info.className = 'dimension-info';
+        info.innerHTML = `<strong>${this.#esc(dim.name)}:</strong> ${this.#esc(dim.default)} <em>(fixed value - ${dim.valueCount} total values)</em>`;
+        controls.appendChild(info);
+      } else {
+        const dimDiv = document.createElement('div');
+        dimDiv.className = 'dimension-selector';
+
+        const dcb = document.createElement('input');
+        dcb.type = 'checkbox';
+        dcb.className = 'dimension-checkbox';
+        dcb.checked = this.#dimensionStates[dimIdx].enabled;
+        dcb.setAttribute('data-dimension-name', dim.name);
+        dcb.addEventListener('change', () => {
+          this.#dimensionStates[dimIdx].enabled = dcb.checked;
+          this.#onControlChange();
+        });
+
+        const dlbl = document.createElement('label');
+        dlbl.textContent = `${dim.name}:`;
+
+        const dsel = this.#createSelectElement(
+          'dimension-select',
+          dim.values.map((v) => ({ value: v, label: v })),
+          this.#dimensionStates[dimIdx].value,
+          (val) => {
+            this.#dimensionStates[dimIdx].value = val;
+            this.#onControlChange();
+          }
+        );
+        dsel.setAttribute('data-dimension-name', dim.name);
+
+        dimDiv.append(dcb, dlbl, dsel);
+        controls.appendChild(dimDiv);
+      }
+    });
+
+    this.appendChild(controls);
+
+    // ── Viewer / preview panel ──
+    const container = document.createElement('div');
+    container.className = 'layer-viewer-container';
+    this.#viewerContainer = container;
+
+    const preview = document.createElement('img');
+    preview.className = 'layer-preview';
+    preview.alt = `Preview of ${layer.title}`;
+    preview.src = this.#buildPreviewUrl();
+    preview.addEventListener('error', () => {
+      preview.style.display = 'none';
+    });
+    this.#preview = preview;
+    container.appendChild(preview);
+
+    this.appendChild(container);
+
+    // ── Wire layer checkbox ──
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        this.#viewerActive = true;
+        this.#createViewer();
+      } else {
+        this.#viewerActive = false;
+        this.#removeViewer();
+      }
+    });
+  }
+
+  // ─── CONTROL CHANGE HANDLERS ──────────────────────────
+
+  #onControlChange() {
+    if (!this.#viewerActive) return;
+    this.#removeViewer();
+    this.#createViewer();
+  }
+
+  #onQueryChange() {
+    if (!this.#viewerActive) return;
+    this.#updateQueryInViewer();
+  }
+
+  // ─── PREVIEW ──────────────────────────────────────────
+
+  #buildPreviewUrl() {
+    const c = this.#config;
+    const layer = c.layer;
+    const st = c.serviceType;
+
+    if (st === 'WMS') {
+      return buildGetMapUrl(c.baseUrl, layer, c.version, this.#selectedStyle);
+    }
+    if (st === 'WMTS') {
+      const defaultStyle = layer.styles?.find((s) => s.isDefault) ||
+        layer.styles?.[0] || { name: 'default' };
+      const firstTMS = layer.supportedTileMatrixSets[0];
+      const tileResources = layer.resourceURLs['tile'] || [];
+      const pngResource =
+        tileResources.find((r) => r.format?.includes('png')) ||
+        tileResources[0];
+      const tileTemplate = pngResource ? pngResource.template : '';
+      let url = buildWMTSTileUrl(
+        tileTemplate,
+        layer,
+        firstTMS ? firstTMS.identifier : '',
+        defaultStyle.name,
+        'image/png',
+        '2',
+        '1',
+        '1'
+      );
+      // Replace dimension parameters with defaults
+      (layer.dimensions || []).forEach((dim) => {
+        url = url.replace(
+          new RegExp('\\{' + dim.name + '\\}', 'g'),
+          dim.default
+        );
+      });
+      return url;
+    }
+    if (st === 'ESRI-MapServer') {
+      if (c.isTiled) {
+        const zoomLevel = c.tileInfo
+          ? Math.floor((c.tileInfo.minZoom + c.tileInfo.maxZoom) / 2)
+          : 2;
+        return `${c.baseUrl}/tile/${zoomLevel}/0/0`;
+      }
+      const bbox = layer.bbox;
+      const params = new URLSearchParams({
+        bbox: `${bbox.minx},${bbox.miny},${bbox.maxx},${bbox.maxy}`,
+        bboxSR: c.wkid.toString(),
+        size: '200,200',
+        imageSR: c.wkid.toString(),
+        format: 'png32',
+        transparent: 'true',
+        f: 'image',
+        layers: `show:${layer.id}`,
+      });
+      return `${c.baseUrl}/export?${params.toString()}`;
+    }
+    if (st === 'ESRI-ImageServer') {
+      const bbox = layer.bbox;
+      const params = new URLSearchParams({
+        bbox: `${bbox.minx},${bbox.miny},${bbox.maxx},${bbox.maxy}`,
+        bboxSR: c.wkid.toString(),
+        size: '200,200',
+        imageSR: c.wkid.toString(),
+        format: c.supportedFormats?.[0] || 'jpgpng',
+        f: 'image',
+      });
+      return `${c.baseUrl}/exportImage?${params.toString()}`;
+    }
+    return '';
+  }
+
+  #updatePreview() {
+    if (this.#preview && this.#config.serviceType === 'WMS') {
+      this.#preview.src = buildGetMapUrl(
+        this.#config.baseUrl,
+        this.#config.layer,
+        this.#config.version,
+        this.#selectedStyle
+      );
+    }
+  }
+
+  // ─── VIEWER LIFECYCLE ──────────────────────────────────
+
+  #createViewer() {
+    const c = this.#config;
+    const layer = c.layer;
+    const container = this.#viewerContainer;
+    if (!container) return;
+
+    // Hide preview
+    if (this.#preview) this.#preview.style.display = 'none';
+
+    const projection = this.#selectedProjection;
+
+    // Create mapml-viewer
+    const viewer = document.createElement('mapml-viewer');
+    viewer.setAttribute('projection', projection);
+    viewer.setAttribute('controls', '');
+
+    // Determine zoom and center
+    const { bbox } = layer;
+    const centerLat = (parseFloat(bbox.miny) + parseFloat(bbox.maxy)) / 2;
+    const centerLon = (parseFloat(bbox.minx) + parseFloat(bbox.maxx)) / 2;
+
+    if (c.serviceType === 'WMTS') {
+      viewer.setAttribute('zoom', '2');
+    } else if (c.serviceType === 'ESRI-MapServer' && c.isTiled) {
+      viewer.setAttribute('zoom', '2');
+    } else {
+      viewer.setAttribute('zoom', '0');
+    }
+
+    if (
+      (c.serviceType === 'ESRI-MapServer' ||
+        c.serviceType === 'ESRI-ImageServer') &&
+      c.wkid !== 4326
+    ) {
+      viewer.setAttribute('lat', '45');
+      viewer.setAttribute('lon', '-75');
+    } else {
+      viewer.setAttribute('lat', centerLat.toString());
+      viewer.setAttribute('lon', centerLon.toString());
+    }
+
+    // Add basemap
+    if (projection !== 'WGS84') {
+      viewer.appendChild(this.#buildBasemapLayer(projection));
+    }
+
+    // Add data layer
+    this.#addDataLayerToViewer(viewer);
+
+    container.appendChild(viewer);
+  }
+
+  #removeViewer() {
+    const container = this.#viewerContainer;
+    if (!container) return;
+
+    if (this.#preview) this.#preview.style.display = 'block';
+
+    const viewer = container.querySelector('mapml-viewer');
+    if (viewer) viewer.remove();
+  }
+
+  // ─── BASEMAP ────────────────────────────────────────────
+
+  #buildBasemapLayer(projection) {
+    const baseLayer = document.createElement('map-layer');
+    const baseExtent = document.createElement('map-extent');
+    baseExtent.setAttribute('checked', '');
+
+    const configs = {
+      OSMTILE: {
+        label: 'Canada Base Map',
+        licenseHref: 'https://open.canada.ca/en/open-government-licence-canada',
+        licenseTitle: 'Open Government Licence - Canada',
+        zoom: { min: '0', max: '15', value: '15' },
+        tiles: [
+          'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_CBCT_GEOM_3857/MapServer/tile/{z}/{y}/{x}?m4h=t',
+          'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT_TXT_3857/MapServer/tile/{z}/{y}/{x}?m4h=t',
+        ],
+      },
+      CBMTILE: {
+        label: 'Canada Base Map - Transportation',
+        licenseHref: 'https://open.canada.ca/en/open-government-licence-canada',
+        licenseTitle: 'Open Government Licence - Canada',
+        zoom: { min: '0', max: '17', value: '17' },
+        extent:
+          'top-left-easting=-5388605, top-left-northing=7005413, bottom-right-easting=3895643, bottom-right-northing=-4427255',
+        tiles: [
+          'https://geoappext.nrcan.gc.ca/arcgis/rest/services/BaseMaps/CBMT3978/MapServer/tile/{z}/{y}/{x}?m4h=t',
+        ],
+      },
+      APSTILE: {
+        label: 'Arctic Ocean Basemap MapML Service',
+        licenseHref: 'https://www.esri.com/legal/software-license',
+        licenseTitle:
+          'Sources: Esri, GEBCO, NOAA, National Geographic, DeLorme, HERE, Geonames.org, and other contributors',
+        zoom: { min: '0', max: '10', value: '10' },
+        tiles: [
+          'https://server.arcgisonline.com/arcgis/rest/services/Polar/Arctic_Ocean_Base/MapServer/tile/{z}/{y}/{x}',
+        ],
+      },
+    };
+
+    const cfg = configs[projection];
+    if (!cfg) return baseLayer;
+
+    baseLayer.setAttribute('label', cfg.label);
+    baseLayer.setAttribute('checked', '');
+    baseExtent.setAttribute('units', projection);
+
+    if (cfg.extent) {
+      const meta = document.createElement('map-meta');
+      meta.setAttribute('name', 'extent');
+      meta.setAttribute('content', cfg.extent);
+      baseExtent.appendChild(meta);
+    }
+
+    const lic = document.createElement('map-link');
+    lic.setAttribute('rel', 'license');
+    lic.setAttribute('href', cfg.licenseHref);
+    lic.setAttribute('title', cfg.licenseTitle);
+    baseExtent.appendChild(lic);
+
+    const zoom = document.createElement('map-input');
+    zoom.setAttribute('name', 'z');
+    zoom.setAttribute('type', 'zoom');
+    zoom.setAttribute('min', cfg.zoom.min);
+    zoom.setAttribute('max', cfg.zoom.max);
+    zoom.setAttribute('value', cfg.zoom.value);
+    baseExtent.appendChild(zoom);
+
+    const y = document.createElement('map-input');
+    y.setAttribute('name', 'y');
+    y.setAttribute('type', 'location');
+    y.setAttribute('units', 'tilematrix');
+    y.setAttribute('axis', 'row');
+    baseExtent.appendChild(y);
+
+    const x = document.createElement('map-input');
+    x.setAttribute('name', 'x');
+    x.setAttribute('type', 'location');
+    x.setAttribute('units', 'tilematrix');
+    x.setAttribute('axis', 'column');
+    baseExtent.appendChild(x);
+
+    cfg.tiles.forEach((tref) => {
+      const link = document.createElement('map-link');
+      link.setAttribute('rel', 'tile');
+      link.setAttribute('tref', tref);
+      baseExtent.appendChild(link);
+    });
+
+    baseLayer.appendChild(baseExtent);
+    return baseLayer;
+  }
+
+  // ─── DATA LAYER BUILDING ───────────────────────────────
+
+  #addDataLayerToViewer(viewer) {
+    const st = this.#config.serviceType;
+    if (st === 'WMS') this.#addWMSLayer(viewer);
+    else if (st === 'WMTS') this.#addWMTSLayer(viewer);
+    else if (st === 'ESRI-MapServer') this.#addESRIMapServerLayer(viewer);
+    else if (st === 'ESRI-ImageServer') this.#addESRIImageServerLayer(viewer);
+  }
+
+  // ── WMS ──
+
+  #addWMSLayer(viewer) {
+    const c = this.#config;
+    const layer = c.layer;
+    const version = c.version;
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const { bbox } = layer;
+    const styleName = this.#selectedStyle;
+    const imgFormat = this.#selectedImageFormat;
+    const includeBounds = this.#boundsEnabled;
+    const queryEnabled = this.#queryEnabled;
+    const selectedFormat = this.#selectedQueryFormat;
+
+    // Map projection to CRS
+    const { projectionCode, units } = this.#projectionToCRS(viewerProjection);
+
+    // Determine bounding box
+    let extentBbox = null;
+    let extentCRS = null;
+
+    if (layer.boundingBoxes) {
+      const crsMap = {
+        OSMTILE: ['EPSG:3857', 'MapML:OSMTILE'],
+        CBMTILE: ['EPSG:3978', 'MapML:CBMTILE'],
+        WGS84: ['EPSG:4326', 'CRS:84', 'MapML:WGS84'],
+        APSTILE: ['EPSG:5936', 'MapML:APSTILE'],
+      };
+      const keys = crsMap[viewerProjection] || [];
+      for (const key of keys) {
+        if (layer.boundingBoxes[key]) {
+          extentBbox = layer.boundingBoxes[key];
+          extentCRS = key.startsWith('MapML:')
+            ? `EPSG:${key === 'MapML:WGS84' ? '4326' : key === 'MapML:OSMTILE' ? '3857' : key === 'MapML:CBMTILE' ? '3978' : '5936'}`
+            : key;
+          break;
+        }
+      }
+    }
+
+    if (!extentBbox) {
+      if (viewerProjection === 'OSMTILE') {
+        const minCoords = wgs84ToWebMercator(
+          parseFloat(bbox.minx),
+          parseFloat(bbox.miny)
+        );
+        const maxCoords = wgs84ToWebMercator(
+          parseFloat(bbox.maxx),
+          parseFloat(bbox.maxy)
+        );
+        extentBbox = {
+          minx: minCoords.x.toString(),
+          miny: minCoords.y.toString(),
+          maxx: maxCoords.x.toString(),
+          maxy: maxCoords.y.toString(),
+        };
+        extentCRS = 'EPSG:3857';
+      } else {
+        extentBbox = bbox;
+        extentCRS = 'EPSG:4326';
+      }
+    }
+
+    const mapLayer = document.createElement('map-layer');
+    mapLayer.setAttribute('label', layer.title);
+    mapLayer.setAttribute('checked', '');
+    mapLayer.setAttribute('data-wms-layer', layer.name);
+
+    // Bounds meta
+    if (includeBounds && extentBbox) {
+      const meta = document.createElement('map-meta');
+      meta.setAttribute('name', 'extent');
+      const isGeo = extentCRS === 'EPSG:4326' || extentCRS === 'CRS:84';
+      const content = isGeo
+        ? `top-left-longitude=${extentBbox.minx}, top-left-latitude=${extentBbox.maxy}, bottom-right-longitude=${extentBbox.maxx}, bottom-right-latitude=${extentBbox.miny}`
+        : `top-left-easting=${extentBbox.minx}, top-left-northing=${extentBbox.maxy}, bottom-right-easting=${extentBbox.maxx}, bottom-right-northing=${extentBbox.miny}`;
+      meta.setAttribute('content', content);
+      mapLayer.appendChild(meta);
+    }
+
+    // License
+    if (layer.licenseUrl) {
+      const lic = document.createElement('map-link');
+      lic.setAttribute('rel', 'license');
+      lic.setAttribute('href', layer.licenseUrl);
+      if (layer.licenseTitle)
+        lic.setAttribute('title', `${layer.licenseTitle} for ${layer.title}`);
+      mapLayer.appendChild(lic);
+    }
+
+    // Legend
+    if (layer.styles?.length > 0 && styleName) {
+      const style = layer.styles.find((s) => s.name === styleName);
+      if (style?.legendURLs?.length > 0) {
+        const legend = style.legendURLs[0];
+        const ll = document.createElement('map-link');
+        ll.setAttribute('rel', 'legend');
+        ll.setAttribute('href', legend.href);
+        if (style.title) ll.setAttribute('title', style.title);
+        if (legend.width) ll.setAttribute('width', legend.width);
+        if (legend.height) ll.setAttribute('height', legend.height);
+        mapLayer.appendChild(ll);
+      }
+    }
+
+    // Extent
+    const mapExtent = document.createElement('map-extent');
+    mapExtent.setAttribute('units', units);
+    mapExtent.setAttribute('checked', '');
+
+    // Location/size inputs
+    const inputs = [
+      {
+        name: 'xmin',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'easting',
+        position: 'top-left',
+      },
+      {
+        name: 'ymin',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'northing',
+        position: 'bottom-left',
+      },
+      {
+        name: 'xmax',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'easting',
+        position: 'bottom-right',
+      },
+      {
+        name: 'ymax',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'northing',
+        position: 'top-right',
+      },
+      { name: 'w', type: 'width', min: '1', max: '10000' },
+      { name: 'h', type: 'height', min: '1', max: '10000' },
+      { name: 'i', type: 'location', units: 'map', axis: 'i' },
+      { name: 'j', type: 'location', units: 'map', axis: 'j' },
+    ];
+    this.#appendMapInputs(mapExtent, inputs);
+
+    // Style selector
+    if (layer.styles?.length > 0) {
+      const mapSelect = document.createElement('map-select');
+      mapSelect.setAttribute('id', 'style-selector');
+      mapSelect.setAttribute('name', 'style');
+      layer.styles.forEach((style) => {
+        const opt = document.createElement('map-option');
+        opt.setAttribute('value', style.name);
+        opt.textContent = style.title;
+        if (style.name === styleName) opt.setAttribute('selected', '');
+        mapSelect.appendChild(opt);
+      });
+      mapExtent.appendChild(mapSelect);
+    }
+
+    // Dimension selectors
+    this.#appendDimensionSelectors(mapExtent, layer);
+
+    // Image link
+    const mapLink = document.createElement('map-link');
+    mapLink.setAttribute('rel', 'image');
+
+    let tref = `${c.baseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetMap&LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imgFormat)}`;
+    if (
+      imgFormat.toLowerCase().includes('png') ||
+      imgFormat.toLowerCase().includes('gif')
+    ) {
+      tref += '&TRANSPARENT=TRUE';
+    }
+    if (styleName) tref += '&STYLES={style}';
+
+    // Dimension params
+    (layer.dimensions || []).forEach((dim, dimIdx) => {
+      if (this.#dimensionStates[dimIdx].enabled) {
+        tref += `&${formatDimensionParam(dim.name)}={${dim.name}}`;
+      }
+    });
+
+    if (version.startsWith('1.3')) {
+      tref += `&CRS=${projectionCode}`;
+      tref +=
+        projectionCode === 'EPSG:4326'
+          ? '&BBOX={ymin},{xmin},{ymax},{xmax}'
+          : '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    } else {
+      tref += `&SRS=${projectionCode}`;
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    }
+    mapLink.setAttribute('tref', tref);
+    mapExtent.appendChild(mapLink);
+
+    // Query link
+    if (queryEnabled && layer.queryable) {
+      mapExtent.appendChild(
+        this.#buildWMSQueryLink(
+          layer,
+          version,
+          projectionCode,
+          selectedFormat,
+          styleName,
+          imgFormat
+        )
+      );
+    }
+
+    mapLayer.appendChild(mapExtent);
+    viewer.appendChild(mapLayer);
+  }
+
+  #buildWMSQueryLink(
+    layer,
+    version,
+    projectionCode,
+    infoFormat,
+    styleName,
+    imageFormat
+  ) {
+    const c = this.#config;
+    const queryLink = document.createElement('map-link');
+    queryLink.setAttribute('rel', 'query');
+    queryLink.setAttribute('data-query-link', 'true');
+
+    const imgFormat = imageFormat || 'image/png';
+    let tref = `${c.baseUrl}?SERVICE=WMS&VERSION=${version}&REQUEST=GetFeatureInfo&LAYERS=${encodeURIComponent(layer.name)}&QUERY_LAYERS=${encodeURIComponent(layer.name)}&WIDTH={w}&HEIGHT={h}&FORMAT=${encodeURIComponent(imgFormat)}`;
+    if (
+      imgFormat.toLowerCase().includes('png') ||
+      imgFormat.toLowerCase().includes('gif')
+    ) {
+      tref += '&TRANSPARENT=TRUE';
+    }
+    tref += `&INFO_FORMAT=${encodeURIComponent(infoFormat)}`;
+
+    if (styleName) {
+      if (styleName.toLowerCase().startsWith('default-')) {
+        tref += '&STYLES=';
+      } else {
+        tref += '&STYLES={style}';
+      }
+    }
+
+    // Dimension params
+    (layer.dimensions || []).forEach((dim, dimIdx) => {
+      if (this.#dimensionStates[dimIdx].enabled) {
+        tref += `&${formatDimensionParam(dim.name)}={${dim.name}}`;
+      }
+    });
+
+    if (version.startsWith('1.3')) {
+      tref += `&CRS=${projectionCode}`;
+      tref +=
+        projectionCode === 'EPSG:4326'
+          ? '&BBOX={ymin},{xmin},{ymax},{xmax}'
+          : '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    } else {
+      tref += `&SRS=${projectionCode}`;
+      tref += '&BBOX={xmin},{ymin},{xmax},{ymax}';
+    }
+
+    tref += version.startsWith('1.3') ? '&I={i}&J={j}' : '&X={i}&Y={j}';
+
+    queryLink.setAttribute('tref', tref);
+    return queryLink;
+  }
+
+  // ── WMTS ──
+
+  #addWMTSLayer(viewer) {
+    const c = this.#config;
+    const layer = c.layer;
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const { bbox } = layer;
+    const styleName =
+      this.#selectedStyle || (layer.styles?.[0]?.name ?? 'default');
+    const imgFormat =
+      this.#selectedImageFormat || layer.formats?.[0] || 'image/png';
+    const includeBounds = this.#boundsEnabled;
+    const queryEnabled = this.#queryEnabled;
+    const selectedFormat = this.#selectedQueryFormat;
+
+    const tileMatrixSet = layer.supportedTileMatrixSets.find(
+      (tms) => tms.projection === viewerProjection
+    );
+    if (!tileMatrixSet) return;
+
+    const mapLayer = document.createElement('map-layer');
+    mapLayer.setAttribute('label', layer.title);
+    mapLayer.setAttribute('checked', '');
+    mapLayer.setAttribute('data-wmts-layer', layer.name);
+    mapLayer.setAttribute('data-service-type', 'WMTS');
+
+    // Bounds
+    if (includeBounds && bbox) {
+      const meta = document.createElement('map-meta');
+      meta.setAttribute('name', 'extent');
+      meta.setAttribute(
+        'content',
+        `top-left-longitude=${bbox.minx}, top-left-latitude=${bbox.maxy}, bottom-right-longitude=${bbox.maxx}, bottom-right-latitude=${bbox.miny}`
+      );
+      mapLayer.appendChild(meta);
+    }
+
+    // License
+    const licenseLink = document.createElement('map-link');
+    licenseLink.setAttribute('rel', 'license');
+    if (layer.licenseUrl) {
+      licenseLink.setAttribute('href', layer.licenseUrl);
+      if (layer.licenseTitle)
+        licenseLink.setAttribute(
+          'title',
+          `${layer.licenseTitle} for ${layer.title}`
+        );
+    } else if (c.baseUrl) {
+      licenseLink.setAttribute(
+        'href',
+        c.baseUrl + '?SERVICE=WMTS&REQUEST=GetCapabilities'
+      );
+      if (c.title) licenseLink.setAttribute('title', c.title);
+    }
+    if (licenseLink.getAttribute('href')) mapLayer.appendChild(licenseLink);
+
+    // Legend
+    if (layer.styles?.length > 0 && styleName) {
+      const style = layer.styles.find((s) => s.name === styleName);
+      if (style?.legendURLs?.length > 0) {
+        const legend = style.legendURLs[0];
+        const ll = document.createElement('map-link');
+        ll.setAttribute('rel', 'legend');
+        ll.setAttribute('href', legend.href);
+        if (style.title) ll.setAttribute('title', style.title);
+        if (legend.width) ll.setAttribute('width', legend.width);
+        if (legend.height) ll.setAttribute('height', legend.height);
+        mapLayer.appendChild(ll);
+      }
+    }
+
+    // Extent
+    const mapExtent = document.createElement('map-extent');
+    mapExtent.setAttribute('units', viewerProjection);
+    mapExtent.setAttribute('checked', '');
+
+    // Zoom levels
+    let minZoom = '0',
+      maxZoom = '18';
+    if (tileMatrixSet.tileMatrices?.length > 0) {
+      const firstId = tileMatrixSet.tileMatrices[0].identifier;
+      const lastId =
+        tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1]
+          .identifier;
+      const firstMatch = firstId?.match(/:(\d+)$/);
+      const lastMatch = lastId?.match(/:(\d+)$/);
+      if (firstMatch && lastMatch) {
+        minZoom = firstMatch[1];
+        maxZoom = lastMatch[1];
+      } else {
+        minZoom = firstId || '0';
+        maxZoom = lastId || '18';
+      }
+    }
+
+    const zoomInput = document.createElement('map-input');
+    zoomInput.setAttribute('name', 'z');
+    zoomInput.setAttribute('type', 'zoom');
+    zoomInput.setAttribute('min', minZoom);
+    zoomInput.setAttribute('max', maxZoom);
+    mapExtent.appendChild(zoomInput);
+
+    this.#appendMapInputs(mapExtent, [
+      { name: 'x', type: 'location', units: 'tilematrix', axis: 'column' },
+      { name: 'y', type: 'location', units: 'tilematrix', axis: 'row' },
+    ]);
+
+    if (queryEnabled && layer.queryable) {
+      this.#appendMapInputs(mapExtent, [
+        { name: 'i', type: 'location', units: 'tile', axis: 'i' },
+        { name: 'j', type: 'location', units: 'tile', axis: 'j' },
+      ]);
+    }
+
+    // Style selector in map-extent
+    if (layer.styles?.length > 1) {
+      const mapSelect = document.createElement('map-select');
+      mapSelect.setAttribute('id', 'style-selector');
+      mapSelect.setAttribute('name', 'style');
+      layer.styles.forEach((style) => {
+        const opt = document.createElement('map-option');
+        opt.setAttribute('value', style.name);
+        opt.textContent = style.title;
+        if (style.name === styleName) opt.setAttribute('selected', '');
+        mapSelect.appendChild(opt);
+      });
+      mapExtent.appendChild(mapSelect);
+    }
+
+    // Dimension selectors
+    this.#appendDimensionSelectors(mapExtent, layer);
+
+    // Tile link
+    const tileMatrixReplacement = this.#getTileMatrixReplacement(tileMatrixSet);
+    const tileResources = layer.resourceURLs['tile'] || [];
+    const tileResource =
+      tileResources.find((r) => r.format === imgFormat) || tileResources[0];
+    if (tileResource) {
+      const mapLink = document.createElement('map-link');
+      mapLink.setAttribute('rel', 'tile');
+      let tref = this.#buildWMTSTref(
+        tileResource.template,
+        tileMatrixSet,
+        tileMatrixReplacement,
+        styleName,
+        layer
+      );
+      mapLink.setAttribute('tref', tref);
+      mapExtent.appendChild(mapLink);
+    }
+
+    // Query link
+    if (queryEnabled && layer.queryable) {
+      const queryResources = layer.resourceURLs['FeatureInfo'] || [];
+      const queryResource =
+        queryResources.find((r) => r.format === selectedFormat) ||
+        queryResources[0];
+      if (queryResource) {
+        const queryLink = document.createElement('map-link');
+        queryLink.setAttribute('rel', 'query');
+        queryLink.setAttribute('data-query-link', 'true');
+        let qtref = this.#buildWMTSQueryTref(
+          queryResource.template,
+          tileMatrixSet,
+          tileMatrixReplacement,
+          styleName,
+          selectedFormat,
+          layer
+        );
+        queryLink.setAttribute('tref', qtref);
+        mapExtent.appendChild(queryLink);
+      }
+    }
+
+    mapLayer.appendChild(mapExtent);
+    viewer.appendChild(mapLayer);
+  }
+
+  #buildWMTSTref(
+    template,
+    tileMatrixSet,
+    tileMatrixReplacement,
+    styleName,
+    layer
+  ) {
+    let tref = template;
+    tref = tref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
+    tref = tref.replace(/{TileMatrix}/g, tileMatrixReplacement);
+    tref = tref.replace(/{TileRow}/g, '{y}');
+    tref = tref.replace(/{TileCol}/g, '{x}');
+    tref = tref.replace(/{Style}/g, styleName);
+    tref = tref.replace(/{style}/g, styleName);
+
+    (layer.dimensions || []).forEach((dim) => {
+      const pat = new RegExp('\\{' + dim.name + '\\}', 'g');
+      tref = dim.usesTemplate
+        ? tref.replace(pat, dim.default)
+        : tref.replace(pat, '{' + dim.name + '}');
+    });
+    return tref;
+  }
+
+  #buildWMTSQueryTref(
+    template,
+    tileMatrixSet,
+    tileMatrixReplacement,
+    styleName,
+    selectedFormat,
+    layer
+  ) {
+    let qtref = template;
+    qtref = qtref.replace(/{TileMatrixSet}/g, tileMatrixSet.identifier);
+    qtref = qtref.replace(/{TileMatrix}/g, tileMatrixReplacement);
+    qtref = qtref.replace(/{TileRow}/g, '{y}');
+    qtref = qtref.replace(/{TileCol}/g, '{x}');
+    qtref = qtref.replace(/{Style}/g, styleName);
+    qtref = qtref.replace(/{style}/g, styleName);
+    qtref = qtref.replace(/{I}/g, '{i}');
+    qtref = qtref.replace(/{J}/g, '{j}');
+    qtref = qtref.replace(/{InfoFormat}/g, selectedFormat);
+    qtref = qtref.replace(/{infoformat}/g, selectedFormat);
+
+    (layer.dimensions || []).forEach((dim) => {
+      const pat = new RegExp('\\{' + dim.name + '\\}', 'g');
+      qtref = dim.usesTemplate
+        ? qtref.replace(pat, dim.default)
+        : qtref.replace(pat, '{' + dim.name + '}');
+    });
+    return qtref;
+  }
+
+  #getTileMatrixReplacement(tileMatrixSet) {
+    if (tileMatrixSet.tileMatrices?.length > 0) {
+      const firstId = tileMatrixSet.tileMatrices[0].identifier;
+      const lastId =
+        tileMatrixSet.tileMatrices[tileMatrixSet.tileMatrices.length - 1]
+          .identifier;
+      const firstMatch = firstId?.match(/^(.+):(\d+)$/);
+      const lastMatch = lastId?.match(/^(.+):(\d+)$/);
+      if (firstMatch && lastMatch && firstMatch[1] === lastMatch[1]) {
+        return firstMatch[1] + ':{z}';
+      }
+    }
+    return '{z}';
+  }
+
+  // ── ESRI MapServer ──
+
+  #addESRIMapServerLayer(viewer) {
+    const c = this.#config;
+    const layer = c.layer;
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const { bbox } = layer;
+    const queryEnabled = this.#queryEnabled;
+    const selectedFormat = this.#selectedImageFormat;
+    const exportMode = this.#selectedExportMode;
+    const includeBounds = this.#boundsEnabled;
+
+    const mapLayer = document.createElement('map-layer');
+    mapLayer.setAttribute('label', layer.title);
+    mapLayer.setAttribute('checked', '');
+    mapLayer.setAttribute('data-esri-layer', layer.name);
+    mapLayer.setAttribute('data-service-type', 'ESRI-MapServer');
+
+    // Bounds
+    if (includeBounds && bbox) {
+      const meta = document.createElement('map-meta');
+      meta.setAttribute('name', 'extent');
+      const content =
+        c.wkid === 4326
+          ? `top-left-longitude=${bbox.minx}, top-left-latitude=${bbox.maxy}, bottom-right-longitude=${bbox.maxx}, bottom-right-latitude=${bbox.miny}`
+          : `top-left-easting=${bbox.minx}, top-left-northing=${bbox.maxy}, bottom-right-easting=${bbox.maxx}, bottom-right-northing=${bbox.miny}`;
+      meta.setAttribute('content', content);
+      mapLayer.appendChild(meta);
+    }
+
+    // Copyright
+    if (c.copyrightText) {
+      const lic = document.createElement('map-link');
+      lic.setAttribute('rel', 'license');
+      lic.setAttribute('title', c.copyrightText);
+      lic.setAttribute('href', '#');
+      mapLayer.appendChild(lic);
+    }
+
+    const mapExtent = document.createElement('map-extent');
+    mapExtent.setAttribute('units', viewerProjection);
+    mapExtent.setAttribute('checked', '');
+
+    if (c.isTiled) {
+      // Tiled service
+      const minZoom = c.tileInfo ? c.tileInfo.minZoom.toString() : '0';
+      const maxZoom = c.tileInfo ? c.tileInfo.maxZoom.toString() : '18';
+
+      const zoomInput = document.createElement('map-input');
+      zoomInput.setAttribute('name', 'z');
+      zoomInput.setAttribute('type', 'zoom');
+      zoomInput.setAttribute('min', minZoom);
+      zoomInput.setAttribute('max', maxZoom);
+      mapExtent.appendChild(zoomInput);
+
+      this.#appendMapInputs(mapExtent, [
+        { name: 'x', type: 'location', units: 'tilematrix', axis: 'column' },
+        { name: 'y', type: 'location', units: 'tilematrix', axis: 'row' },
+      ]);
+
+      const tileLink = document.createElement('map-link');
+      tileLink.setAttribute('rel', 'tile');
+      tileLink.setAttribute('tref', `${c.baseUrl}/tile/{z}/{y}/{x}`);
+      mapExtent.appendChild(tileLink);
+    } else {
+      // Dynamic service
+      this.#appendMapInputs(mapExtent, [
+        {
+          name: 'xmin',
+          type: 'location',
+          units: 'pcrs',
+          axis: 'easting',
+          position: 'top-left',
+        },
+        {
+          name: 'ymin',
+          type: 'location',
+          units: 'pcrs',
+          axis: 'northing',
+          position: 'bottom-left',
+        },
+        {
+          name: 'xmax',
+          type: 'location',
+          units: 'pcrs',
+          axis: 'easting',
+          position: 'bottom-right',
+        },
+        {
+          name: 'ymax',
+          type: 'location',
+          units: 'pcrs',
+          axis: 'northing',
+          position: 'top-right',
+        },
+        { name: 'w', type: 'width', min: '1', max: '10000' },
+        { name: 'h', type: 'height', min: '1', max: '10000' },
+      ]);
+
+      if (queryEnabled) {
+        this.#appendMapInputs(mapExtent, [
+          { name: 'i', type: 'location', units: 'map', axis: 'i' },
+          { name: 'j', type: 'location', units: 'map', axis: 'j' },
+        ]);
+      }
+
+      // Image link
+      let layersParam;
+      if (exportMode === 'fused') {
+        const allIds = c.layers.map((l) => l.id).join(',');
+        layersParam = `show:${allIds}`;
+      } else {
+        layersParam = `show:${layer.id}`;
+      }
+
+      const formatMap = { png: 'png32', jpg: 'jpg', gif: 'gif' };
+      const esriFormat = formatMap[selectedFormat] || 'png32';
+
+      const imageLink = document.createElement('map-link');
+      imageLink.setAttribute('rel', 'image');
+      imageLink.setAttribute(
+        'tref',
+        `${c.baseUrl}/export?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=${c.wkid}&size={w},{h}&imageSR=${c.wkid}&format=${esriFormat}&transparent=true&f=image&layers=${encodeURIComponent(layersParam)}`
+      );
+      mapExtent.appendChild(imageLink);
+
+      // Query link
+      if (queryEnabled && c.supportsQuery) {
+        const queryLink = document.createElement('map-link');
+        queryLink.setAttribute('rel', 'query');
+        queryLink.setAttribute('data-query-link', 'true');
+        queryLink.setAttribute(
+          'tref',
+          `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=html`
+        );
+        mapExtent.appendChild(queryLink);
+      }
+    }
+
+    mapLayer.appendChild(mapExtent);
+    viewer.appendChild(mapLayer);
+  }
+
+  // ── ESRI ImageServer ──
+
+  #addESRIImageServerLayer(viewer) {
+    const c = this.#config;
+    const layer = c.layer;
+    const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+    const { bbox } = layer;
+    const queryEnabled = this.#queryEnabled;
+    const selectedFormat = this.#selectedImageFormat;
+    const includeBounds = this.#boundsEnabled;
+
+    const mapLayer = document.createElement('map-layer');
+    mapLayer.setAttribute('label', layer.title);
+    mapLayer.setAttribute('checked', '');
+    mapLayer.setAttribute('data-esri-layer', layer.name);
+    mapLayer.setAttribute('data-service-type', 'ESRI-ImageServer');
+
+    // Bounds
+    if (includeBounds && bbox) {
+      const meta = document.createElement('map-meta');
+      meta.setAttribute('name', 'extent');
+      const content =
+        c.wkid === 4326
+          ? `top-left-longitude=${bbox.minx}, top-left-latitude=${bbox.maxy}, bottom-right-longitude=${bbox.maxx}, bottom-right-latitude=${bbox.miny}`
+          : `top-left-easting=${bbox.minx}, top-left-northing=${bbox.maxy}, bottom-right-easting=${bbox.maxx}, bottom-right-northing=${bbox.miny}`;
+      meta.setAttribute('content', content);
+      mapLayer.appendChild(meta);
+    }
+
+    // Copyright
+    if (c.copyrightText) {
+      const lic = document.createElement('map-link');
+      lic.setAttribute('rel', 'license');
+      lic.setAttribute('title', c.copyrightText);
+      lic.setAttribute('href', '#');
+      mapLayer.appendChild(lic);
+    }
+
+    const mapExtent = document.createElement('map-extent');
+    mapExtent.setAttribute('units', viewerProjection);
+    mapExtent.setAttribute('checked', '');
+
+    this.#appendMapInputs(mapExtent, [
+      {
+        name: 'xmin',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'easting',
+        position: 'top-left',
+      },
+      {
+        name: 'ymin',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'northing',
+        position: 'bottom-left',
+      },
+      {
+        name: 'xmax',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'easting',
+        position: 'bottom-right',
+      },
+      {
+        name: 'ymax',
+        type: 'location',
+        units: 'pcrs',
+        axis: 'northing',
+        position: 'top-right',
+      },
+      { name: 'w', type: 'width', min: '1', max: '10000' },
+      { name: 'h', type: 'height', min: '1', max: '10000' },
+    ]);
+
+    if (queryEnabled) {
+      this.#appendMapInputs(mapExtent, [
+        { name: 'i', type: 'location', units: 'map', axis: 'i' },
+        { name: 'j', type: 'location', units: 'map', axis: 'j' },
+      ]);
+    }
+
+    // Image link
+    const formatMap = { png: 'png', jpgpng: 'jpgpng', tiff: 'tiff' };
+    const esriFormat = formatMap[selectedFormat] || 'jpgpng';
+
+    const imageLink = document.createElement('map-link');
+    imageLink.setAttribute('rel', 'image');
+    imageLink.setAttribute(
+      'tref',
+      `${c.baseUrl}/exportImage?bbox={xmin},{ymin},{xmax},{ymax}&bboxSR=${c.wkid}&size={w},{h}&imageSR=${c.wkid}&format=${esriFormat}&pixelType=U8&noData=0&interpolation=RSP_BilinearInterpolation&f=image`
+    );
+    mapExtent.appendChild(imageLink);
+
+    // Query link
+    if (queryEnabled && c.supportsQuery) {
+      const queryLink = document.createElement('map-link');
+      queryLink.setAttribute('rel', 'query');
+      queryLink.setAttribute('data-query-link', 'true');
+      queryLink.setAttribute(
+        'tref',
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=html`
+      );
+      mapExtent.appendChild(queryLink);
+    }
+
+    mapLayer.appendChild(mapExtent);
+    viewer.appendChild(mapLayer);
+  }
+
+  // ─── QUERY UPDATE (partial, no rebuild) ─────────────────
+
+  #updateQueryInViewer() {
+    const st = this.#config.serviceType;
+    const container = this.#viewerContainer;
+    if (!container) return;
+    const viewer = container.querySelector('mapml-viewer');
+    if (!viewer) return;
+
+    if (st === 'WMS') this.#updateWMSQuery(viewer);
+    else if (st === 'WMTS') this.#updateWMTSQuery(viewer);
+    else if (st === 'ESRI-MapServer') this.#updateESRIMapServerQuery(viewer);
+    else if (st === 'ESRI-ImageServer')
+      this.#updateESRIImageServerQuery(viewer);
+  }
+
+  #updateWMSQuery(viewer) {
+    const layer = this.#config.layer;
+    const mapLayer = viewer.querySelector(
+      `map-layer[data-wms-layer="${layer.name}"]`
+    );
+    if (!mapLayer) return;
+    const mapExtent = mapLayer.querySelector('map-extent');
+    const existing = mapExtent.querySelector(
+      'map-link[data-query-link="true"]'
+    );
+
+    if (this.#queryEnabled) {
+      if (existing) existing.remove();
+      const viewerProjection = viewer.getAttribute('projection') || 'OSMTILE';
+      const { projectionCode } = this.#projectionToCRS(viewerProjection);
+      const queryLink = this.#buildWMSQueryLink(
+        layer,
+        this.#config.version,
+        projectionCode,
+        this.#selectedQueryFormat,
+        this.#selectedStyle,
+        this.#selectedImageFormat
+      );
+      mapExtent.appendChild(queryLink);
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
+  #updateWMTSQuery(viewer) {
+    const layer = this.#config.layer;
+    const mapLayer = viewer.querySelector(
+      'map-layer[data-service-type="WMTS"]'
+    );
+    if (!mapLayer) return;
+    const mapExtent = mapLayer.querySelector('map-extent');
+    if (!mapExtent) return;
+
+    const existing = mapExtent.querySelector(
+      'map-link[data-query-link="true"]'
+    );
+    const existingI = mapExtent.querySelector('map-input[name="i"]');
+    const existingJ = mapExtent.querySelector('map-input[name="j"]');
+
+    if (this.#queryEnabled && layer.queryable) {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+
+      this.#appendMapInputs(mapExtent, [
+        { name: 'i', type: 'location', units: 'tile', axis: 'i' },
+        { name: 'j', type: 'location', units: 'tile', axis: 'j' },
+      ]);
+
+      const tileMatrixSet = layer.supportedTileMatrixSets.find(
+        (tms) => tms.projection === this.#selectedProjection
+      );
+      if (!tileMatrixSet) return;
+
+      const queryResources = layer.resourceURLs['FeatureInfo'] || [];
+      const queryResource =
+        queryResources.find((r) => r.format === this.#selectedQueryFormat) ||
+        queryResources[0];
+      if (queryResource) {
+        const tileMatrixReplacement =
+          this.#getTileMatrixReplacement(tileMatrixSet);
+        const queryLink = document.createElement('map-link');
+        queryLink.setAttribute('rel', 'query');
+        queryLink.setAttribute('data-query-link', 'true');
+        queryLink.setAttribute(
+          'tref',
+          this.#buildWMTSQueryTref(
+            queryResource.template,
+            tileMatrixSet,
+            tileMatrixReplacement,
+            this.#selectedStyle,
+            this.#selectedQueryFormat,
+            layer
+          )
+        );
+        mapExtent.appendChild(queryLink);
+      }
+    } else {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+    }
+  }
+
+  #updateESRIMapServerQuery(viewer) {
+    const c = this.#config;
+    const layer = c.layer;
+    const mapLayer = viewer.querySelector(
+      'map-layer[data-service-type="ESRI-MapServer"]'
+    );
+    if (!mapLayer) return;
+    const mapExtent = mapLayer.querySelector('map-extent');
+    if (!mapExtent) return;
+
+    // No query for tiled services
+    if (mapExtent.querySelector('map-link[rel="tile"]')) return;
+
+    const existing = mapExtent.querySelector(
+      'map-link[data-query-link="true"]'
+    );
+    const existingI = mapExtent.querySelector('map-input[name="i"]');
+    const existingJ = mapExtent.querySelector('map-input[name="j"]');
+
+    if (this.#queryEnabled && c.supportsQuery) {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+
+      this.#appendMapInputs(mapExtent, [
+        { name: 'i', type: 'location', units: 'map', axis: 'i' },
+        { name: 'j', type: 'location', units: 'map', axis: 'j' },
+      ]);
+
+      const queryLink = document.createElement('map-link');
+      queryLink.setAttribute('rel', 'query');
+      queryLink.setAttribute('data-query-link', 'true');
+      queryLink.setAttribute(
+        'tref',
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=html`
+      );
+      mapExtent.appendChild(queryLink);
+    } else {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+    }
+  }
+
+  #updateESRIImageServerQuery(viewer) {
+    const c = this.#config;
+    const mapLayer = viewer.querySelector(
+      'map-layer[data-service-type="ESRI-ImageServer"]'
+    );
+    if (!mapLayer) return;
+    const mapExtent = mapLayer.querySelector('map-extent');
+    if (!mapExtent) return;
+
+    const existing = mapExtent.querySelector(
+      'map-link[data-query-link="true"]'
+    );
+    const existingI = mapExtent.querySelector('map-input[name="i"]');
+    const existingJ = mapExtent.querySelector('map-input[name="j"]');
+
+    if (this.#queryEnabled && c.supportsQuery) {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+
+      this.#appendMapInputs(mapExtent, [
+        { name: 'i', type: 'location', units: 'map', axis: 'i' },
+        { name: 'j', type: 'location', units: 'map', axis: 'j' },
+      ]);
+
+      const queryLink = document.createElement('map-link');
+      queryLink.setAttribute('rel', 'query');
+      queryLink.setAttribute('data-query-link', 'true');
+      queryLink.setAttribute(
+        'tref',
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=html`
+      );
+      mapExtent.appendChild(queryLink);
+    } else {
+      if (existing) existing.remove();
+      if (existingI) existingI.remove();
+      if (existingJ) existingJ.remove();
+    }
+  }
+
+  // ─── SHARED HELPERS ───────────────────────────────────
+
+  #layerIsQueryable() {
+    const c = this.#config;
+    const st = c.serviceType;
+    const layer = c.layer;
+    if (st === 'WMS') return !!layer.queryable;
+    if (st === 'WMTS') {
+      const queryResources = layer.resourceURLs?.['FeatureInfo'] || [];
+      return layer.queryable && queryResources.length > 0;
+    }
+    if (st === 'ESRI-MapServer') return c.supportsQuery && !c.isTiled;
+    if (st === 'ESRI-ImageServer') return !!c.supportsQuery;
+    return false;
+  }
+
+  #projectionToCRS(projection) {
+    const map = {
+      OSMTILE: { projectionCode: 'EPSG:3857', units: 'OSMTILE' },
+      CBMTILE: { projectionCode: 'EPSG:3978', units: 'CBMTILE' },
+      WGS84: { projectionCode: 'EPSG:4326', units: 'WGS84' },
+      APSTILE: { projectionCode: 'EPSG:5936', units: 'APSTILE' },
+    };
+    return map[projection] || map.OSMTILE;
+  }
+
+  #appendMapInputs(parent, inputs) {
+    inputs.forEach((inp) => {
+      const el = document.createElement('map-input');
+      el.setAttribute('name', inp.name);
+      el.setAttribute('type', inp.type);
+      if (inp.position) el.setAttribute('position', inp.position);
+      if (inp.axis) el.setAttribute('axis', inp.axis);
+      if (inp.min) el.setAttribute('min', inp.min);
+      if (inp.max) el.setAttribute('max', inp.max);
+      if (inp.units) el.setAttribute('units', inp.units);
+      parent.appendChild(el);
+    });
+  }
+
+  #appendDimensionSelectors(mapExtent, layer) {
+    (layer.dimensions || []).forEach((dim, dimIdx) => {
+      if (dim.usesTemplate) return; // Fixed-value dimensions are baked into URL
+      if (!this.#dimensionStates[dimIdx].enabled) return;
+
+      const selectedValue = this.#dimensionStates[dimIdx].value;
+
+      const mapSelect = document.createElement('map-select');
+      mapSelect.setAttribute('id', `${dim.name}-selector`);
+      mapSelect.setAttribute('name', dim.name);
+      dim.values.forEach((value) => {
+        const opt = document.createElement('map-option');
+        opt.setAttribute('value', value);
+        opt.textContent = value;
+        if (value === selectedValue) opt.setAttribute('selected', '');
+        mapSelect.appendChild(opt);
+      });
+      mapExtent.appendChild(mapSelect);
+    });
+  }
+
+  // ── UI Builder Helpers ──
+
+  #buildSelect(labelText, selectClass, options, selectedValue, onChange) {
+    const div = document.createElement('div');
+    div.className = selectClass.replace('-select', '-selector');
+    const lbl = document.createElement('label');
+    lbl.textContent = labelText;
+    div.appendChild(lbl);
+    div.appendChild(
+      this.#createSelectElement(selectClass, options, selectedValue, onChange)
+    );
+    return div;
+  }
+
+  #createSelectElement(className, options, selectedValue, onChange) {
+    const sel = document.createElement('select');
+    sel.className = className;
+    options.forEach((opt) => {
+      const o = document.createElement('option');
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if (opt.value === selectedValue) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener('change', () => onChange(sel.value));
+    return sel;
+  }
+
+  #buildCheckbox(labelText, cbClass, lblClass, checked, title, onChange) {
+    const div = document.createElement('div');
+    div.className = cbClass.replace('-checkbox', '-selector');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = cbClass;
+    cb.checked = checked;
+    if (title) cb.title = title;
+    cb.addEventListener('change', () => onChange(cb.checked));
+    const lbl = document.createElement('label');
+    lbl.className = lblClass;
+    lbl.textContent = labelText;
+    lbl.addEventListener('click', (e) => {
+      e.preventDefault();
+      cb.click();
+    });
+    div.append(cb, lbl);
+    return div;
+  }
+
+  #esc(text) {
+    if (!text) return '';
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d.innerHTML;
+  }
+
+  // ─── PUBLIC API ────────────────────────────────────────
+
+  getMapMLMarkup() {
+    const viewer = this.#viewerContainer?.querySelector('mapml-viewer');
+    if (!viewer) return null;
+    // Clone and serialize
+    const clone = viewer.cloneNode(true);
+    // Pretty-print with indentation
+    const serializer = new XMLSerializer();
+    return serializer.serializeToString(clone);
+  }
+}
+
+customElements.define('mapmlify-layer', MapmlifyLayer);
+
+export { MapmlifyLayer };
