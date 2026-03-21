@@ -28,6 +28,9 @@ class MapmlifyLayer extends HTMLElement {
   #layerCheckbox = null;
   #viewerContainer = null;
   #preview = null;
+  #sourceCodeTextarea = null;
+  #sourceCodeVisible = false;
+  #moveendHandler = null;
 
   set layerConfig(value) {
     this.#config = value;
@@ -108,6 +111,7 @@ class MapmlifyLayer extends HTMLElement {
     this.#boundsEnabled = true;
     this.#queryEnabled = false;
     this.#viewerActive = false;
+    this.#sourceCodeVisible = false;
     this.#selectedExportMode = 'individual';
   }
 
@@ -407,6 +411,49 @@ class MapmlifyLayer extends HTMLElement {
       }
     });
 
+    // Source code buttons
+    const sourceCodeDiv = document.createElement('div');
+    sourceCodeDiv.className = 'source-code-controls';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'source-toggle-btn';
+    toggleBtn.textContent = 'Show source code';
+    toggleBtn.addEventListener('click', () => {
+      this.#sourceCodeVisible = !this.#sourceCodeVisible;
+      toggleBtn.textContent = this.#sourceCodeVisible
+        ? 'Hide source code'
+        : 'Show source code';
+      if (this.#sourceCodeTextarea) {
+        this.#sourceCodeTextarea.style.display = this.#sourceCodeVisible
+          ? 'block'
+          : 'none';
+      }
+      if (this.#sourceCodeVisible) this.#updateSourceCode();
+    });
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'source-copy-btn';
+    copyBtn.textContent = 'Copy source code';
+    copyBtn.addEventListener('click', () => {
+      if (!this.#sourceCodeTextarea) return;
+      const text = this.#sourceCodeTextarea.value;
+      navigator.clipboard.writeText(text).then(
+        () => {
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy source code';
+          }, 1500);
+        },
+        () => {
+          // Fallback: select the text so user can Ctrl+C
+          this.#sourceCodeTextarea.select();
+        }
+      );
+    });
+
+    sourceCodeDiv.append(toggleBtn, copyBtn);
+    controls.appendChild(sourceCodeDiv);
+
     this.appendChild(controls);
 
     // ── Viewer / preview panel ──
@@ -423,6 +470,15 @@ class MapmlifyLayer extends HTMLElement {
     });
     this.#preview = preview;
     container.appendChild(preview);
+
+    // Source code textarea (hidden by default)
+    const sourceTextarea = document.createElement('textarea');
+    sourceTextarea.className = 'source-code-textarea';
+    sourceTextarea.readOnly = true;
+    sourceTextarea.style.display = 'none';
+    sourceTextarea.setAttribute('aria-label', 'Map source code');
+    this.#sourceCodeTextarea = sourceTextarea;
+    container.appendChild(sourceTextarea);
 
     this.appendChild(container);
 
@@ -449,6 +505,7 @@ class MapmlifyLayer extends HTMLElement {
   #onQueryChange() {
     if (!this.#viewerActive) return;
     this.#updateQueryInViewer();
+    this.#updateSourceCode();
   }
 
   // ─── PREVIEW ──────────────────────────────────────────
@@ -586,7 +643,18 @@ class MapmlifyLayer extends HTMLElement {
     // Add data layer
     this.#addDataLayerToViewer(viewer);
 
-    container.appendChild(viewer);
+    // Insert viewer before the textarea so it appears above it
+    if (this.#sourceCodeTextarea && this.#sourceCodeTextarea.parentNode === container) {
+      container.insertBefore(viewer, this.#sourceCodeTextarea);
+    } else {
+      container.appendChild(viewer);
+    }
+
+    // Listen for moveend to update source code
+    this.#moveendHandler = () => this.#updateSourceCode();
+    viewer.addEventListener('map-moveend', this.#moveendHandler);
+    // Initial serialization
+    this.#updateSourceCode();
   }
 
   #removeViewer() {
@@ -596,7 +664,18 @@ class MapmlifyLayer extends HTMLElement {
     if (this.#preview) this.#preview.style.display = 'block';
 
     const viewer = container.querySelector('mapml-viewer');
-    if (viewer) viewer.remove();
+    if (viewer) {
+      if (this.#moveendHandler) {
+        viewer.removeEventListener('map-moveend', this.#moveendHandler);
+        this.#moveendHandler = null;
+      }
+      viewer.remove();
+    }
+
+    // Clear source code
+    if (this.#sourceCodeTextarea) {
+      this.#sourceCodeTextarea.value = '';
+    }
   }
 
   // ─── BASEMAP ────────────────────────────────────────────
@@ -1778,16 +1857,70 @@ class MapmlifyLayer extends HTMLElement {
     return d.innerHTML;
   }
 
+  // ─── SOURCE CODE ──────────────────────────────────────
+
+  #updateSourceCode() {
+    if (!this.#sourceCodeVisible) return;
+    const viewer = this.#viewerContainer?.querySelector('mapml-viewer');
+    if (!viewer || !this.#sourceCodeTextarea) return;
+    this.#sourceCodeTextarea.value = this.#serializeViewer(viewer);
+    // Auto-size to fit content without scrollbars
+    this.#sourceCodeTextarea.style.height = 'auto';
+    this.#sourceCodeTextarea.style.height = this.#sourceCodeTextarea.scrollHeight + 'px';
+  }
+
+  #serializeViewer(viewer) {
+    const clone = viewer.cloneNode(true);
+    // Sync live attributes (zoom, lat, lon) from the viewer
+    clone.setAttribute('zoom', viewer.getAttribute('zoom'));
+    clone.setAttribute('lat', viewer.getAttribute('lat'));
+    clone.setAttribute('lon', viewer.getAttribute('lon'));
+    // Remove dynamic style elements injected by mapml-viewer
+    clone.querySelectorAll('style').forEach((s) => s.remove());
+    return this.#prettyPrint(clone);
+  }
+
+  #prettyPrint(node, indent = '') {
+    const INDENT = '  ';
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      return text ? indent + text + '\n' : '';
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName.toLowerCase();
+    let attrs = '';
+    for (const attr of node.attributes) {
+      attrs += ` ${attr.name}="${attr.value}"`;
+    }
+
+    if (!node.childNodes.length) {
+      return `${indent}<${tag}${attrs}></${tag}>\n`;
+    }
+
+    // Single text child
+    if (
+      node.childNodes.length === 1 &&
+      node.firstChild.nodeType === Node.TEXT_NODE
+    ) {
+      const text = node.firstChild.textContent.trim();
+      return `${indent}<${tag}${attrs}>${text}</${tag}>\n`;
+    }
+
+    let result = `${indent}<${tag}${attrs}>\n`;
+    for (const child of node.childNodes) {
+      result += this.#prettyPrint(child, indent + INDENT);
+    }
+    result += `${indent}</${tag}>\n`;
+    return result;
+  }
+
   // ─── PUBLIC API ────────────────────────────────────────
 
   getMapMLMarkup() {
     const viewer = this.#viewerContainer?.querySelector('mapml-viewer');
     if (!viewer) return null;
-    // Clone and serialize
-    const clone = viewer.cloneNode(true);
-    // Pretty-print with indentation
-    const serializer = new XMLSerializer();
-    return serializer.serializeToString(clone);
+    return this.#serializeViewer(viewer);
   }
 }
 
