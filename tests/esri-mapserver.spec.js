@@ -16,7 +16,7 @@ test.describe('ESRI MapServer (Tiled)', () => {
   test.beforeEach(async ({ page }) => {
     await interceptTileRequests(page);
     await routeFixture(page, '**/test.example.com/**', 'esri-mapserver-tiled.json');
-    await page.goto('/src/index.html');
+    await page.goto('/index.html');
   });
 
   test('displays service title and tiled badge', async ({ page }) => {
@@ -86,7 +86,7 @@ test.describe('ESRI MapServer (Dynamic)', () => {
   test.beforeEach(async ({ page }) => {
     await interceptTileRequests(page);
     await routeFixture(page, '**/test.example.com/**', 'esri-mapserver-dynamic.json');
-    await page.goto('/src/index.html');
+    await page.goto('/index.html');
   });
 
   test('displays service title and MapServer badge', async ({ page }) => {

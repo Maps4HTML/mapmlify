@@ -13,7 +13,7 @@ const SERVICE_URL = 'https://test.example.com/wms111?SERVICE=WMS&VERSION=1.1.1&R
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
   await routeFixture(page, '**/test.example.com/**', 'wms-111.xml');
-  await page.goto('/src/index.html');
+  await page.goto('/index.html');
 });
 
 test.describe('WMS 1.1.1 — Service Info', () => {

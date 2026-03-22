@@ -8,7 +8,7 @@ import {
 
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
-  await page.goto('/src/index.html');
+  await page.goto('/index.html');
 });
 
 test.describe('Service Detection — WMS', () => {

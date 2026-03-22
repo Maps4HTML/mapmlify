@@ -141,7 +141,7 @@ let currentWmsBaseUrl = '';
 // Load capabilities URLs from file on page load
 async function loadCapabilitiesPresets() {
   try {
-    const response = await fetch('capabilities.txt');
+    const response = await fetch('src/capabilities.txt');
     const text = await response.text();
     const lines = text.split('\n').filter((line) => line.trim());
 

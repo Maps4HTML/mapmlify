@@ -14,7 +14,7 @@ const SERVICE_URL = 'https://test.example.com/arcgis/rest/services/Elevation/Ima
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
   await routeFixture(page, '**/test.example.com/**', 'esri-imageserver.json');
-  await page.goto('/src/index.html');
+  await page.goto('/index.html');
 });
 
 test.describe('ESRI ImageServer — Service Info', () => {
