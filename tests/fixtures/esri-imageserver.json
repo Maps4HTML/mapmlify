@@ -1,0 +1,42 @@
+{
+  "currentVersion": 10.91,
+  "serviceDescription": "Test ImageServer service",
+  "name": "Test Elevation Raster",
+  "description": "A synthetic ESRI ImageServer response for testing MapMLify",
+  "copyrightText": "Test ImageServer Copyright",
+  "spatialReference": {
+    "wkid": 102100,
+    "latestWkid": 3857
+  },
+  "extent": {
+    "xmin": -20037508.34,
+    "ymin": -20037508.34,
+    "xmax": 20037508.34,
+    "ymax": 20037508.34,
+    "spatialReference": { "wkid": 102100, "latestWkid": 3857 }
+  },
+  "pixelType": "U8",
+  "bandCount": 3,
+  "pixelSizeX": 0.29858214164761665,
+  "pixelSizeY": 0.29858214164761665,
+  "serviceDataType": "esriImageServiceDataTypeGeneric",
+  "capabilities": "Catalog,Metadata,Mensuration",
+  "supportedImageFormatTypes": "PNG,JPG,JPGPNG,TIFF",
+  "allowRasterFunction": true,
+  "hasMultidimensions": false,
+  "maxImageHeight": 4100,
+  "maxImageWidth": 15000,
+  "objectIdField": "OBJECTID",
+  "fields": [
+    {
+      "name": "OBJECTID",
+      "type": "esriFieldTypeOID",
+      "alias": "OBJECTID"
+    },
+    {
+      "name": "Name",
+      "type": "esriFieldTypeString",
+      "alias": "Name"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "currentVersion": 10.91,
+  "serviceDescription": "Test dynamic MapServer service",
+  "mapName": "Test Dynamic MapServer",
+  "description": "A minimal ESRI MapServer (dynamic/export) response for testing MapMLify",
+  "copyrightText": "Test Dynamic Copyright",
+  "supportsDynamicLayers": true,
+  "spatialReference": {
+    "wkid": 102100,
+    "latestWkid": 3857
+  },
+  "singleFusedMapCache": false,
+  "initialExtent": {
+    "xmin": -13655026,
+    "ymin": 5695322,
+    "xmax": -13598212,
+    "ymax": 5738404,
+    "spatialReference": { "wkid": 102100, "latestWkid": 3857 }
+  },
+  "fullExtent": {
+    "xmin": -13655026,
+    "ymin": 5695322,
+    "xmax": -13598212,
+    "ymax": 5738404,
+    "spatialReference": { "wkid": 102100, "latestWkid": 3857 }
+  },
+  "supportedImageFormatTypes": "PNG32,PNG24,PNG,JPG,GIF",
+  "capabilities": "Map,Query,Data",
+  "layers": [
+    {
+      "id": 0,
+      "name": "Parks",
+      "parentLayerId": -1,
+      "defaultVisibility": true,
+      "subLayerIds": null,
+      "minScale": 0,
+      "maxScale": 0,
+      "description": "City parks and green spaces"
+    },
+    {
+      "id": 1,
+      "name": "Recreation Facilities",
+      "parentLayerId": -1,
+      "defaultVisibility": true,
+      "subLayerIds": null,
+      "minScale": 0,
+      "maxScale": 0,
+      "description": "Recreation centers and pools"
+    }
+  ]
+}

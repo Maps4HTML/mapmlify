@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE WMT_MS_Capabilities SYSTEM "http://schemas.opengis.net/wms/1.1.1/capabilities_1_1_1.dtd">
+<WMT_MS_Capabilities version="1.1.1">
+<Service>
+  <Name>OGC:WMS</Name>
+  <Title>Test WMS 1.1.1 Service</Title>
+  <Abstract>A minimal WMS 1.1.1 service for testing MapMLify</Abstract>
+  <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="https://test.example.com/wms111?"/>
+</Service>
+<Capability>
+  <Request>
+    <GetCapabilities>
+      <Format>application/vnd.ogc.wms_xml</Format>
+      <DCPType><HTTP><Get><OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="https://test.example.com/wms111?"/></Get></HTTP></DCPType>
+    </GetCapabilities>
+    <GetMap>
+      <Format>image/png</Format>
+      <Format>image/jpeg</Format>
+      <DCPType><HTTP><Get><OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="https://test.example.com/wms111?"/></Get></HTTP></DCPType>
+    </GetMap>
+    <GetFeatureInfo>
+      <Format>text/html</Format>
+      <Format>text/plain</Format>
+      <DCPType><HTTP><Get><OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="https://test.example.com/wms111?"/></Get></HTTP></DCPType>
+    </GetFeatureInfo>
+  </Request>
+  <Layer queryable="1">
+    <Title>Test WMS 1.1.1 Service</Title>
+    <SRS>EPSG:4326</SRS>
+    <SRS>EPSG:3857</SRS>
+    <LatLonBoundingBox minx="-180" miny="-90" maxx="180" maxy="90"/>
+    <Layer queryable="1">
+      <Name>roads</Name>
+      <Title>Roads Layer</Title>
+      <Abstract>A queryable road network layer</Abstract>
+      <LatLonBoundingBox minx="-141" miny="42" maxx="-52" maxy="84"/>
+      <BoundingBox SRS="EPSG:4326" minx="-141" miny="42" maxx="-52" maxy="84"/>
+      <Style>
+        <Name>default</Name>
+        <Title>Default Style</Title>
+        <LegendURL width="120" height="40">
+          <Format>image/png</Format>
+          <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://test.example.com/legend/roads/default"/>
+        </LegendURL>
+      </Style>
+      <Style>
+        <Name>highlighted</Name>
+        <Title>Highlighted Style</Title>
+      </Style>
+    </Layer>
+    <Layer queryable="1">
+      <Name>cities</Name>
+      <Title>Cities Layer</Title>
+      <Abstract>Major cities</Abstract>
+      <LatLonBoundingBox minx="-141" miny="42" maxx="-52" maxy="84"/>
+      <Style>
+        <Name>default</Name>
+        <Title>Default Style</Title>
+      </Style>
+    </Layer>
+  </Layer>
+</Capability>
+</WMT_MS_Capabilities>

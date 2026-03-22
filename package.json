@@ -6,7 +6,9 @@
   "scripts": {
     "format": "prettier --write \"**/*.js\"",
     "format:check": "prettier --check \"**/*.js\"",
-    "serve": "npx http-server . -p 8000 -c-1"
+    "serve": "npx http-server . -p 8000 -c-1",
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui"
   },
   "keywords": [
     "mapml",
@@ -15,11 +17,12 @@
     "ogc"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "W3C",
   "dependencies": {
     "@maps4html/mapml": "^0.16.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "http-server": "^14.1.1",
     "prettier": "^3.2.5"
   }

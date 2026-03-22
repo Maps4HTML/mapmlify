@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Capabilities xmlns="http://www.opengis.net/wmts/1.0"
+  xmlns:ows="http://www.opengis.net/ows/1.1"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.opengis.net/wmts/1.0 http://schemas.opengis.net/wmts/1.0/wmtsGetCapabilities_response.xsd"
+  version="1.0.0">
+  <ows:ServiceIdentification>
+    <ows:Title>Test WMTS Service</ows:Title>
+    <ows:Abstract>A minimal WMTS 1.0.0 service for testing MapMLify</ows:Abstract>
+    <ows:ServiceType>OGC WMTS</ows:ServiceType>
+    <ows:ServiceTypeVersion>1.0.0</ows:ServiceTypeVersion>
+  </ows:ServiceIdentification>
+  <Contents>
+    <Layer>
+      <ows:Title>Satellite Imagery</ows:Title>
+      <ows:Identifier>satellite</ows:Identifier>
+      <ows:Abstract>Test satellite imagery layer</ows:Abstract>
+      <ows:WGS84BoundingBox>
+        <ows:LowerCorner>-180 -85.05</ows:LowerCorner>
+        <ows:UpperCorner>180 85.05</ows:UpperCorner>
+      </ows:WGS84BoundingBox>
+      <Style isDefault="true">
+        <ows:Identifier>default</ows:Identifier>
+        <ows:Title>Default Style</ows:Title>
+        <LegendURL format="image/png" xlink:href="https://test.example.com/legend/satellite" width="100" height="30"/>
+      </Style>
+      <Format>image/png</Format>
+      <Format>image/jpeg</Format>
+      <InfoFormat>text/html</InfoFormat>
+      <InfoFormat>application/json</InfoFormat>
+      <TileMatrixSetLink>
+        <TileMatrixSet>GoogleMapsCompatible</TileMatrixSet>
+      </TileMatrixSetLink>
+      <ResourceURL format="image/png" resourceType="tile"
+        template="https://test.example.com/wmts/satellite/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png?style={Style}"/>
+      <ResourceURL format="text/html" resourceType="FeatureInfo"
+        template="https://test.example.com/wmts/satellite/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}/{I}/{J}.html?style={Style}&amp;infoformat={InfoFormat}"/>
+    </Layer>
+    <Layer>
+      <ows:Title>Terrain Layer</ows:Title>
+      <ows:Identifier>terrain</ows:Identifier>
+      <ows:Abstract>Test terrain layer without FeatureInfo</ows:Abstract>
+      <ows:WGS84BoundingBox>
+        <ows:LowerCorner>-180 -85.05</ows:LowerCorner>
+        <ows:UpperCorner>180 85.05</ows:UpperCorner>
+      </ows:WGS84BoundingBox>
+      <Style isDefault="true">
+        <ows:Identifier>default</ows:Identifier>
+        <ows:Title>Default Style</ows:Title>
+      </Style>
+      <Format>image/png</Format>
+      <TileMatrixSetLink>
+        <TileMatrixSet>GoogleMapsCompatible</TileMatrixSet>
+      </TileMatrixSetLink>
+      <ResourceURL format="image/png" resourceType="tile"
+        template="https://test.example.com/wmts/terrain/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png"/>
+    </Layer>
+    <TileMatrixSet>
+      <ows:Identifier>GoogleMapsCompatible</ows:Identifier>
+      <ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>
+      <TileMatrix>
+        <ows:Identifier>0</ows:Identifier>
+        <ScaleDenominator>559082264.029</ScaleDenominator>
+        <TopLeftCorner>-20037508.3428 20037508.3428</TopLeftCorner>
+        <TileWidth>256</TileWidth>
+        <TileHeight>256</TileHeight>
+        <MatrixWidth>1</MatrixWidth>
+        <MatrixHeight>1</MatrixHeight>
+      </TileMatrix>
+      <TileMatrix>
+        <ows:Identifier>1</ows:Identifier>
+        <ScaleDenominator>279541132.015</ScaleDenominator>
+        <TopLeftCorner>-20037508.3428 20037508.3428</TopLeftCorner>
+        <TileWidth>256</TileWidth>
+        <TileHeight>256</TileHeight>
+        <MatrixWidth>2</MatrixWidth>
+        <MatrixHeight>2</MatrixHeight>
+      </TileMatrix>
+      <TileMatrix>
+        <ows:Identifier>2</ows:Identifier>
+        <ScaleDenominator>139770566.007</ScaleDenominator>
+        <TopLeftCorner>-20037508.3428 20037508.3428</TopLeftCorner>
+        <TileWidth>256</TileWidth>
+        <TileHeight>256</TileHeight>
+        <MatrixWidth>4</MatrixWidth>
+        <MatrixHeight>4</MatrixHeight>
+      </TileMatrix>
+      <TileMatrix>
+        <ows:Identifier>3</ows:Identifier>
+        <ScaleDenominator>69885283.0036</ScaleDenominator>
+        <TopLeftCorner>-20037508.3428 20037508.3428</TopLeftCorner>
+        <TileWidth>256</TileWidth>
+        <TileHeight>256</TileHeight>
+        <MatrixWidth>8</MatrixWidth>
+        <MatrixHeight>8</MatrixHeight>
+      </TileMatrix>
+    </TileMatrixSet>
+  </Contents>
+</Capabilities>
