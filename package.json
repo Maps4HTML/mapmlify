@@ -13,13 +13,13 @@
   "keywords": [
     "mapml",
     "wms",
+    "wmts",
     "web-maps",
     "ogc"
   ],
-  "author": "",
+  "author": "Peter Rushforth",
   "license": "W3C",
   "dependencies": {
-    "@maps4html/mapml": "^0.16.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
