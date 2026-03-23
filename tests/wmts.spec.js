@@ -106,14 +106,10 @@ test.describe('WMTS — Tile Link', () => {
 });
 
 test.describe('WMTS — Query Link', () => {
-  test('queryable layer gets query link when enabled', async ({ page }) => {
+  test('queryable layer gets query link by default', async ({ page }) => {
     await loadService(page, SERVICE_URL);
     await activateLayer(page, 0);
-    // Enable query
-    const layer = page.locator('mapmlify-layer').nth(0);
-    await layer.locator('.query-format-selector input[type="checkbox"]').check();
-    // Wait for viewer rebuild
-    await layer.locator('mapml-viewer').waitFor({ timeout: 15000 });
+    // Query is enabled by default for queryable layers
     const mapLayer = viewerLocator(page, 0, 'map-layer[data-wmts-layer]');
     const queryLink = mapLayer.locator('map-link[rel="query"]');
     await expect(queryLink).toHaveCount(1);

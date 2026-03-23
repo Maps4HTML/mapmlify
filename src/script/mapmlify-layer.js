@@ -94,11 +94,15 @@ class MapmlifyLayer extends HTMLElement {
       this.#selectedProjection = c.projection || 'OSMTILE';
     }
 
-    // Query format default
+    // Query format default (smart selection based on priority)
     if (st === 'WMS') {
-      this.#selectedQueryFormat = c.getFeatureInfoFormats?.[0] || 'text/html';
+      this.#selectedQueryFormat = this.#selectBestQueryFormat(
+        c.getFeatureInfoFormats || []
+      );
     } else if (st === 'WMTS') {
-      this.#selectedQueryFormat = layer.infoFormats?.[0] || 'text/html';
+      this.#selectedQueryFormat = this.#selectBestQueryFormat(
+        layer.infoFormats || []
+      );
     }
 
     // Dimension defaults
@@ -109,7 +113,8 @@ class MapmlifyLayer extends HTMLElement {
     }));
 
     this.#boundsEnabled = true;
-    this.#queryEnabled = false;
+    // Query enabled by default if layer is queryable
+    this.#queryEnabled = this.#layerIsQueryable();
     this.#viewerActive = false;
     this.#sourceCodeVisible = false;
     this.#selectedExportMode = 'individual';
@@ -1432,7 +1437,7 @@ class MapmlifyLayer extends HTMLElement {
         queryLink.setAttribute('data-query-link', 'true');
         queryLink.setAttribute(
           'tref',
-          `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=html`
+          `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=json`
         );
         mapExtent.appendChild(queryLink);
       }
@@ -1543,7 +1548,7 @@ class MapmlifyLayer extends HTMLElement {
       queryLink.setAttribute('data-query-link', 'true');
       queryLink.setAttribute(
         'tref',
-        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=html`
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=json`
       );
       mapExtent.appendChild(queryLink);
     }
@@ -1691,7 +1696,7 @@ class MapmlifyLayer extends HTMLElement {
       queryLink.setAttribute('data-query-link', 'true');
       queryLink.setAttribute(
         'tref',
-        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=html`
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&layers=all:${layer.id}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=true&f=json`
       );
       mapExtent.appendChild(queryLink);
     } else {
@@ -1731,7 +1736,7 @@ class MapmlifyLayer extends HTMLElement {
       queryLink.setAttribute('data-query-link', 'true');
       queryLink.setAttribute(
         'tref',
-        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=html`
+        `${c.baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&sr=${c.wkid}&tolerance=5&mapExtent={xmin},{ymin},{xmax},{ymax}&imageDisplay={w},{h},96&returnGeometry=false&returnCatalogItems=true&f=json`
       );
       mapExtent.appendChild(queryLink);
     } else {
@@ -1742,6 +1747,39 @@ class MapmlifyLayer extends HTMLElement {
   }
 
   // ─── SHARED HELPERS ───────────────────────────────────
+
+  // Select best query format based on priority:
+  // 1. text/mapml
+  // 2. application/json or application/geo+json
+  // 3. text/html
+  // 4. text/plain
+  // 5. first format in list (fallback)
+  #selectBestQueryFormat(formats) {
+    if (!formats || formats.length === 0) return 'text/html';
+
+    // Check for text/mapml (highest priority)
+    const mapml = formats.find((f) => f.toLowerCase() === 'text/mapml');
+    if (mapml) return mapml;
+
+    // Check for application/json or application/geo+json
+    const json = formats.find(
+      (f) =>
+        f.toLowerCase() === 'application/json' ||
+        f.toLowerCase() === 'application/geo+json'
+    );
+    if (json) return json;
+
+    // Check for text/html
+    const html = formats.find((f) => f.toLowerCase() === 'text/html');
+    if (html) return html;
+
+    // Check for text/plain
+    const plain = formats.find((f) => f.toLowerCase() === 'text/plain');
+    if (plain) return plain;
+
+    // Fallback to first format
+    return formats[0];
+  }
 
   #layerIsQueryable() {
     const c = this.#config;

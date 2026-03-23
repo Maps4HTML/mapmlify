@@ -8,6 +8,7 @@ Current Conditions, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&versio
 Coastal Flood Risk Index, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=CoastalFloodRiskIndex
 Fire Weather Hotspots (2020), https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RAQDPS-FW.CE_HOTSPOTS.2020
 Wildfire Hotspots, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WildfireHotspots
+Service web du Ministère de la Sécurité publique du Québec, https://geoegl.msp.gouv.qc.ca/apis/wss/inondation2020.fcgi?SERVICE=WMS&REQUEST=GetCapabilities
 Air Quality - NO2 Monthly Average, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=RDAQA.CE_NO2-MAvg
 Weather Radio Stations, https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WEATHERADIO
 Sea Ice Volume (1km), https://geo.weather.gc.ca/geomet/?lang=en&service=WMS&version=1.3.0&request=GetCapabilities&layers=WCPS_1km_SeaIceVol

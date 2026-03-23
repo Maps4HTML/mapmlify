@@ -123,21 +123,18 @@ test.describe('WMS 1.3.0 — Image Link', () => {
 });
 
 test.describe('WMS 1.3.0 — Query Link', () => {
-  test('queryable layer has no query link by default', async ({ page }) => {
+  test('queryable layer has query link by default', async ({ page }) => {
     await loadService(page, SERVICE_URL);
     await activateLayer(page, 0);
-    // Query is disabled by default
+    // Query is enabled by default for queryable layers
     const queryLinks = viewerLocator(page, 0, 'map-link[rel="query"]');
-    await expect(queryLinks).toHaveCount(0);
+    await expect(queryLinks).toHaveCount(1);
   });
 
-  test('enabling query adds query link with I/J params', async ({ page }) => {
+  test('query link uses I/J params for WMS 1.3.0', async ({ page }) => {
     await loadService(page, SERVICE_URL);
     await activateLayer(page, 0);
-    // Enable query checkbox
-    const layer = page.locator('mapmlify-layer').nth(0);
-    await layer.locator('.query-format-selector input[type="checkbox"]').check();
-    // Wait for query link to appear
+    // Query is enabled by default
     const queryLink = viewerLocator(page, 0, 'map-link[rel="query"]');
     await expect(queryLink).toHaveCount(1);
     const tref = await queryLink.getAttribute('tref');

@@ -165,10 +165,11 @@ Each projection has specific basemap configuration with zoom inputs, tile matrix
 - Extract from `<ResourceURL resourceType="FeatureInfo">` elements
 - Info formats specified in capabilities as MIME types
 
-**ESRI Identify** - Uses `identify` endpoint:
-- **MapServer**: `${baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&...`
-- **ImageServer**: `${baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&...`
-- Returns results in JSON format, supports various `returnGeometry` options
+**ESRI Identify** - Uses `identify` endpoint with JSON format:
+- **MapServer**: `${baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&...&f=json`
+- **ImageServer**: `${baseUrl}/identify?geometry={i},{j}&geometryType=esriGeometryPoint&...&f=json`
+- Uses `f=json` parameter to return ESRI JSON format for broad compatibility across ArcGIS versions
+- MapServer uses `returnGeometry=true`, ImageServer uses `returnCatalogItems=true`
 
 ## Common Pitfalls
 

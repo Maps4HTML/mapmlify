@@ -51,9 +51,7 @@ test.describe('WMS 1.1.1 — Version-Specific Parameters', () => {
   test('query tref uses X/Y instead of I/J', async ({ page }) => {
     await loadService(page, SERVICE_URL);
     await activateLayer(page, 0);
-    // Enable query
-    const layer = page.locator('mapmlify-layer').nth(0);
-    await layer.locator('.query-format-selector input[type="checkbox"]').check();
+    // Query is enabled by default
     const queryLink = viewerLocator(page, 0, 'map-link[rel="query"]');
     await expect(queryLink).toHaveCount(1);
     const tref = await queryLink.getAttribute('tref');

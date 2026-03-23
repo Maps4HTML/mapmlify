@@ -97,13 +97,10 @@ test.describe('ESRI ImageServer — Query', () => {
     await expect(layer.locator('.query-format-selector')).toHaveCount(1);
   });
 
-  test('enabling query adds identify link', async ({ page }) => {
+  test('query enabled by default adds identify link', async ({ page }) => {
     await loadService(page, SERVICE_URL);
     await activateLayer(page, 0);
-    const layer = page.locator('mapmlify-layer').nth(0);
-    await layer.locator('.query-format-selector input[type="checkbox"]').check();
-    // Wait for viewer rebuild
-    await layer.locator('mapml-viewer').waitFor({ timeout: 15000 });
+    // Query is enabled by default for queryable services
     const mapLayer = viewerLocator(page, 0, 'map-layer[data-esri-layer]');
     const queryLink = mapLayer.locator('map-link[rel="query"]');
     await expect(queryLink).toHaveCount(1);
@@ -111,5 +108,6 @@ test.describe('ESRI ImageServer — Query', () => {
     expect(tref).toContain('/identify?');
     expect(tref).toContain('geometry={i},{j}');
     expect(tref).toContain('geometryType=esriGeometryPoint');
+    expect(tref).toContain('f=json');
   });
 });
