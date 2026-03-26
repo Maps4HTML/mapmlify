@@ -8,7 +8,8 @@ import {
   viewerLocator,
 } from './helpers.js';
 
-const SERVICE_URL = 'https://test.example.com/wms111?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetCapabilities';
+const SERVICE_URL =
+  'https://test.example.com/wms111?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetCapabilities';
 
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
@@ -61,7 +62,9 @@ test.describe('WMS 1.1.1 — Version-Specific Parameters', () => {
     expect(tref).not.toContain('J={j}');
   });
 
-  test('BBOX uses standard xmin,ymin,xmax,ymax order even for EPSG:4326', async ({ page }) => {
+  test('BBOX uses standard xmin,ymin,xmax,ymax order even for EPSG:4326', async ({
+    page,
+  }) => {
     await loadService(page, SERVICE_URL);
     // Switch to WGS84 projection
     const layer = page.locator('mapmlify-layer').nth(0);

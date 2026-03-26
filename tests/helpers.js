@@ -25,7 +25,12 @@ export function readFixture(filename) {
  * @param {string} fixtureFilename - File in tests/fixtures/
  * @param {string} [contentType] - Override content type (auto-detected from extension)
  */
-export async function routeFixture(page, urlPattern, fixtureFilename, contentType) {
+export async function routeFixture(
+  page,
+  urlPattern,
+  fixtureFilename,
+  contentType
+) {
   const body = readFixture(fixtureFilename);
   if (!contentType) {
     contentType = fixtureFilename.endsWith('.json')

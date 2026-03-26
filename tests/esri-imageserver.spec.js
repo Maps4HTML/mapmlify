@@ -9,7 +9,8 @@ import {
   viewerLocator,
 } from './helpers.js';
 
-const SERVICE_URL = 'https://test.example.com/arcgis/rest/services/Elevation/ImageServer?f=json';
+const SERVICE_URL =
+  'https://test.example.com/arcgis/rest/services/Elevation/ImageServer?f=json';
 
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
@@ -22,7 +23,9 @@ test.describe('ESRI ImageServer — Service Info', () => {
     await loadService(page, SERVICE_URL);
     const details = page.locator('#service-details');
     await expect(details).toContainText('Test Elevation Raster');
-    await expect(page.locator('.service-type-badge')).toContainText('ImageServer');
+    await expect(page.locator('.service-type-badge')).toContainText(
+      'ImageServer'
+    );
   });
 
   test('creates single layer element', async ({ page }) => {
@@ -86,12 +89,17 @@ test.describe('ESRI ImageServer — Viewer Generation', () => {
     const mapLayer = viewerLocator(page, 0, 'map-layer[data-esri-layer]');
     const license = mapLayer.locator('map-link[rel="license"]');
     await expect(license).toHaveCount(1);
-    await expect(license).toHaveAttribute('title', 'Test ImageServer Copyright');
+    await expect(license).toHaveAttribute(
+      'title',
+      'Test ImageServer Copyright'
+    );
   });
 });
 
 test.describe('ESRI ImageServer — Query', () => {
-  test('query toggle is present (Catalog/Metadata capabilities)', async ({ page }) => {
+  test('query toggle is present (Catalog/Metadata capabilities)', async ({
+    page,
+  }) => {
     await loadService(page, SERVICE_URL);
     const layer = page.locator('mapmlify-layer').nth(0);
     await expect(layer.locator('.query-format-selector')).toHaveCount(1);

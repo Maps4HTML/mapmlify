@@ -9,7 +9,8 @@ import {
   viewerLocator,
 } from './helpers.js';
 
-const SERVICE_URL = 'https://test.example.com/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetCapabilities';
+const SERVICE_URL =
+  'https://test.example.com/wmts?SERVICE=WMTS&VERSION=1.0.0&REQUEST=GetCapabilities';
 
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
@@ -85,8 +86,14 @@ test.describe('WMTS — Viewer Generation', () => {
     const extent = mapLayer.locator('map-extent');
     await expect(extent.locator('map-input[name="x"]')).toHaveCount(1);
     await expect(extent.locator('map-input[name="y"]')).toHaveCount(1);
-    await expect(extent.locator('map-input[name="x"]')).toHaveAttribute('units', 'tilematrix');
-    await expect(extent.locator('map-input[name="y"]')).toHaveAttribute('units', 'tilematrix');
+    await expect(extent.locator('map-input[name="x"]')).toHaveAttribute(
+      'units',
+      'tilematrix'
+    );
+    await expect(extent.locator('map-input[name="y"]')).toHaveAttribute(
+      'units',
+      'tilematrix'
+    );
   });
 });
 

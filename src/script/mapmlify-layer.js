@@ -649,7 +649,10 @@ class MapmlifyLayer extends HTMLElement {
     this.#addDataLayerToViewer(viewer);
 
     // Insert viewer before the textarea so it appears above it
-    if (this.#sourceCodeTextarea && this.#sourceCodeTextarea.parentNode === container) {
+    if (
+      this.#sourceCodeTextarea &&
+      this.#sourceCodeTextarea.parentNode === container
+    ) {
       container.insertBefore(viewer, this.#sourceCodeTextarea);
     } else {
       container.appendChild(viewer);
@@ -1904,7 +1907,8 @@ class MapmlifyLayer extends HTMLElement {
     this.#sourceCodeTextarea.value = this.#serializeViewer(viewer);
     // Auto-size to fit content without scrollbars
     this.#sourceCodeTextarea.style.height = 'auto';
-    this.#sourceCodeTextarea.style.height = this.#sourceCodeTextarea.scrollHeight + 'px';
+    this.#sourceCodeTextarea.style.height =
+      this.#sourceCodeTextarea.scrollHeight + 'px';
   }
 
   #serializeViewer(viewer) {

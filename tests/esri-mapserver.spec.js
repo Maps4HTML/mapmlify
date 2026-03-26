@@ -9,13 +9,19 @@ import {
   viewerLocator,
 } from './helpers.js';
 
-const TILED_URL = 'https://test.example.com/arcgis/rest/services/Tiled/MapServer?f=json';
-const DYNAMIC_URL = 'https://test.example.com/arcgis/rest/services/Dynamic/MapServer?f=json';
+const TILED_URL =
+  'https://test.example.com/arcgis/rest/services/Tiled/MapServer?f=json';
+const DYNAMIC_URL =
+  'https://test.example.com/arcgis/rest/services/Dynamic/MapServer?f=json';
 
 test.describe('ESRI MapServer (Tiled)', () => {
   test.beforeEach(async ({ page }) => {
     await interceptTileRequests(page);
-    await routeFixture(page, '**/test.example.com/**', 'esri-mapserver-tiled.json');
+    await routeFixture(
+      page,
+      '**/test.example.com/**',
+      'esri-mapserver-tiled.json'
+    );
     await page.goto('/index.html');
   });
 
@@ -85,7 +91,11 @@ test.describe('ESRI MapServer (Tiled)', () => {
 test.describe('ESRI MapServer (Dynamic)', () => {
   test.beforeEach(async ({ page }) => {
     await interceptTileRequests(page);
-    await routeFixture(page, '**/test.example.com/**', 'esri-mapserver-dynamic.json');
+    await routeFixture(
+      page,
+      '**/test.example.com/**',
+      'esri-mapserver-dynamic.json'
+    );
     await page.goto('/index.html');
   });
 
@@ -93,7 +103,9 @@ test.describe('ESRI MapServer (Dynamic)', () => {
     await loadService(page, DYNAMIC_URL);
     const details = page.locator('#service-details');
     await expect(details).toContainText('Test Dynamic MapServer');
-    await expect(page.locator('.service-type-badge')).toContainText('ESRI MapServer');
+    await expect(page.locator('.service-type-badge')).toContainText(
+      'ESRI MapServer'
+    );
   });
 
   test('lists correct number of layers', async ({ page }) => {
@@ -122,7 +134,9 @@ test.describe('ESRI MapServer (Dynamic)', () => {
     expect(tref).toContain('layers=');
   });
 
-  test('location inputs present (xmin, ymin, xmax, ymax, w, h)', async ({ page }) => {
+  test('location inputs present (xmin, ymin, xmax, ymax, w, h)', async ({
+    page,
+  }) => {
     await loadService(page, DYNAMIC_URL);
     await activateLayer(page, 0);
     const mapLayer = viewerLocator(page, 0, 'map-layer[data-esri-layer]');

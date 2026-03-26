@@ -9,7 +9,8 @@ import {
   viewerLocator,
 } from './helpers.js';
 
-const SERVICE_URL = 'https://test.example.com/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities';
+const SERVICE_URL =
+  'https://test.example.com/wms?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities';
 
 test.beforeEach(async ({ page }) => {
   await interceptTileRequests(page);
@@ -82,8 +83,14 @@ test.describe('WMS 1.3.0 — Viewer Generation', () => {
       );
     }
     // Size inputs
-    await expect(extent.locator('map-input[name="w"]')).toHaveAttribute('type', 'width');
-    await expect(extent.locator('map-input[name="h"]')).toHaveAttribute('type', 'height');
+    await expect(extent.locator('map-input[name="w"]')).toHaveAttribute(
+      'type',
+      'width'
+    );
+    await expect(extent.locator('map-input[name="h"]')).toHaveAttribute(
+      'type',
+      'height'
+    );
     // Click coordinate inputs
     await expect(extent.locator('map-input[name="i"]')).toHaveCount(1);
     await expect(extent.locator('map-input[name="j"]')).toHaveCount(1);
