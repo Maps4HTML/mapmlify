@@ -90,7 +90,12 @@ export function getLayerElements(page) {
  */
 export async function activateLayer(page, index) {
   const layer = page.locator('mapmlify-layer').nth(index);
-  await layer.locator('.layer-checkbox').check();
+  const cb = layer.locator('.layer-checkbox');
+  // The IntersectionObserver may have already checked this box
+  const alreadyChecked = await cb.isChecked();
+  if (!alreadyChecked) {
+    await cb.check();
+  }
   // Wait for the mapml-viewer to appear inside this layer
   await layer.locator('mapml-viewer').waitFor({ timeout: 15000 });
 }

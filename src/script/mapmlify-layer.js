@@ -31,6 +31,7 @@ class MapmlifyLayer extends HTMLElement {
   #sourceCodeTextarea = null;
   #sourceCodeVisible = false;
   #moveendHandler = null;
+  #lazyLoadObserver = null;
 
   set layerConfig(value) {
     this.#config = value;
@@ -47,11 +48,42 @@ class MapmlifyLayer extends HTMLElement {
     if (this.#config) {
       this.#initDefaults();
       this.#render();
+      this.#setupLazyLoading();
     }
   }
 
   disconnectedCallback() {
     this.#removeViewer();
+    if (this.#lazyLoadObserver) {
+      this.#lazyLoadObserver.disconnect();
+      this.#lazyLoadObserver = null;
+    }
+  }
+
+  #setupLazyLoading() {
+    const options = {
+      root: null,
+      rootMargin: '100px',
+      threshold: 0.1,
+    };
+
+    this.#lazyLoadObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (
+          entry.isIntersecting &&
+          this.#layerCheckbox &&
+          !this.#layerCheckbox.checked
+        ) {
+          this.#layerCheckbox.checked = true;
+          this.#layerCheckbox.dispatchEvent(new Event('change'));
+
+          this.#lazyLoadObserver.disconnect();
+          this.#lazyLoadObserver = null;
+        }
+      });
+    }, options);
+
+    this.#lazyLoadObserver.observe(this);
   }
 
   #initDefaults() {
