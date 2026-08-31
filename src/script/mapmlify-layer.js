@@ -26,6 +26,7 @@ class MapmlifyLayer extends HTMLElement {
 
   // DOM references (set during render, avoids querySelector overhead)
   #layerCheckbox = null;
+  #boundsCheckbox = null;
   #viewerContainer = null;
   #preview = null;
   #sourceCodeTextarea = null;
@@ -144,7 +145,7 @@ class MapmlifyLayer extends HTMLElement {
       value: dim.default,
     }));
 
-    this.#boundsEnabled = true;
+    this.#boundsEnabled = this.#hasMatchingBounds(this.#selectedProjection);
     // Query enabled by default if layer is queryable
     this.#queryEnabled = this.#layerIsQueryable();
     this.#viewerActive = false;
@@ -213,6 +214,10 @@ class MapmlifyLayer extends HTMLElement {
           this.#selectedProjection,
           (val) => {
             this.#selectedProjection = val;
+            this.#boundsEnabled = this.#hasMatchingBounds(val);
+            if (this.#boundsCheckbox) {
+              this.#boundsCheckbox.checked = this.#boundsEnabled;
+            }
             this.#onControlChange();
           }
         )
@@ -241,19 +246,19 @@ class MapmlifyLayer extends HTMLElement {
     }
 
     // Bounds toggle
-    controls.appendChild(
-      this.#buildCheckbox(
-        'Include Bounds',
-        'bounds-checkbox',
-        'bounds-label',
-        this.#boundsEnabled,
-        'Include layer bounds (disable if bounds are incorrect)',
-        (val) => {
-          this.#boundsEnabled = val;
-          this.#onControlChange();
-        }
-      )
+    const boundsWrapper = this.#buildCheckbox(
+      'Include Bounds',
+      'bounds-checkbox',
+      'bounds-label',
+      this.#boundsEnabled,
+      'Include layer bounds (disable if bounds are incorrect)',
+      (val) => {
+        this.#boundsEnabled = val;
+        this.#onControlChange();
+      }
     );
+    this.#boundsCheckbox = boundsWrapper.querySelector('.bounds-checkbox');
+    controls.appendChild(boundsWrapper);
 
     // Query toggle
     const hasQuery = this.#layerIsQueryable();
@@ -282,7 +287,10 @@ class MapmlifyLayer extends HTMLElement {
         queryDiv.appendChild(fmtLabel);
         const sel = this.#createSelectElement(
           'format-select',
-          c.getFeatureInfoFormats.map((f) => ({ value: f, label: f })),
+          this.#sortQueryFormats(c.getFeatureInfoFormats).map((f) => ({
+            value: f,
+            label: f,
+          })),
           this.#selectedQueryFormat,
           (val) => {
             this.#selectedQueryFormat = val;
@@ -296,7 +304,10 @@ class MapmlifyLayer extends HTMLElement {
         queryDiv.appendChild(fmtLabel);
         const sel = this.#createSelectElement(
           'format-select',
-          layer.infoFormats.map((f) => ({ value: f, label: f })),
+          this.#sortQueryFormats(layer.infoFormats).map((f) => ({
+            value: f,
+            label: f,
+          })),
           this.#selectedQueryFormat,
           (val) => {
             this.#selectedQueryFormat = val;
@@ -1785,7 +1796,7 @@ class MapmlifyLayer extends HTMLElement {
 
   // Select best query format based on priority:
   // 1. text/mapml
-  // 2. application/json or application/geo+json
+  // 2. application/json, application/geo+json, application/geojson, or geojson
   // 3. text/html
   // 4. text/plain
   // 5. first format in list (fallback)
@@ -1796,11 +1807,13 @@ class MapmlifyLayer extends HTMLElement {
     const mapml = formats.find((f) => f.toLowerCase() === 'text/mapml');
     if (mapml) return mapml;
 
-    // Check for application/json or application/geo+json
+    // Check for application/json, application/geo+json, application/geojson, or geojson
     const json = formats.find(
       (f) =>
         f.toLowerCase() === 'application/json' ||
-        f.toLowerCase() === 'application/geo+json'
+        f.toLowerCase() === 'application/geo+json' ||
+        f.toLowerCase() === 'application/geojson' ||
+        f.toLowerCase() === 'geojson'
     );
     if (json) return json;
 
@@ -1814,6 +1827,65 @@ class MapmlifyLayer extends HTMLElement {
 
     // Fallback to first format
     return formats[0];
+  }
+
+  // Sort query formats so preferred formats appear first in the dropdown
+  #sortQueryFormats(formats) {
+    const priority = [
+      'text/mapml',
+      'application/json',
+      'application/geo+json',
+      'application/geojson',
+      'geojson',
+    ];
+    return [...formats].sort((a, b) => {
+      const ai = priority.indexOf(a.toLowerCase());
+      const bi = priority.indexOf(b.toLowerCase());
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return 0;
+    });
+  }
+
+  // Check if the layer has a bounding box in a CRS that matches the given projection.
+  // Returns false when only a WGS 84 fallback would be used for heavily-projected
+  // coordinate systems (CBMTILE, APSTILE), because the geographic bounds can be
+  // misleading and restrict querying to the wrong area.
+  #hasMatchingBounds(projection) {
+    const c = this.#config;
+    const st = c.serviceType;
+    const layer = c.layer;
+
+    if (st === 'WMS') {
+      if (!layer.boundingBoxes) return false;
+      const crsMap = {
+        OSMTILE: ['EPSG:3857', 'MapML:OSMTILE'],
+        CBMTILE: ['EPSG:3978', 'MapML:CBMTILE'],
+        WGS84: ['EPSG:4326', 'CRS:84', 'MapML:WGS84'],
+        APSTILE: ['EPSG:5936', 'MapML:APSTILE'],
+      };
+      const keys = crsMap[projection] || [];
+      for (const key of keys) {
+        if (layer.boundingBoxes[key]) return true;
+      }
+      // WGS84 fallback is acceptable for OSMTILE (reliable transform) and WGS84
+      if (projection === 'OSMTILE' || projection === 'WGS84') {
+        return !!layer.bbox;
+      }
+      return false;
+    }
+
+    if (st === 'WMTS') {
+      // WMTS bbox is always WGS 84; only a reliable match for OSMTILE/WGS84
+      if (projection === 'OSMTILE' || projection === 'WGS84') {
+        return !!layer.bbox;
+      }
+      return false;
+    }
+
+    // ESRI services: bbox is in the native CRS, always matches
+    return !!layer.bbox;
   }
 
   #layerIsQueryable() {
